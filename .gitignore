@@ -1,0 +1,19 @@
+node_modules/
+dist/
+data/
+output/
+release/
+client/
+release-client/
+deploy/
+.playwright-cli/
+.qa-data/
+qa-artifacts/
+.env
+.env.*
+!.env.example
+*.log
+# Command-line fragment files accidentally created in the workspace.
+\({tag
+document.querySelector*
+e.className*

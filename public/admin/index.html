@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111714" />
+    <title>映序 · 管理台</title>
+    <link rel="stylesheet" href="./admin.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">映</span><div><strong>映序管理台</strong><small>云端项目与存储台账</small></div></div>
+        <div class="top-actions"><span id="session-label" class="session-label">未登录</span><button id="refresh-button" class="button quiet" type="button" hidden>刷新</button><button id="logout-button" class="button quiet" type="button" hidden>退出</button></div>
+      </header>
+
+      <section id="login-panel" class="login-panel">
+        <div class="eyebrow">ADMIN ACCESS</div>
+        <h1>管理员登录</h1>
+        <p>登录后可查看所有账号的项目占用，并执行受控数据清理。</p>
+        <form id="login-form" class="login-form">
+          <label for="password">管理员密码</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" />
+          <button class="button primary" type="submit">登录管理台</button>
+        </form>
+      </section>
+
+      <section id="dashboard" hidden>
+        <div class="dashboard-head"><div><div class="eyebrow">CLOUD LEDGER</div><h1>项目台账</h1><p id="last-updated">尚未加载</p></div><button id="cleanup-button" class="button danger" type="button">清理媒体与分析数据</button></div>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <div id="summary" class="summary-grid"></div>
+        <div class="toolbar"><label class="search"><span>搜索项目</span><input id="search" type="search" placeholder="标题或账号标识" /></label><span id="project-count" class="muted"></span></div>
+        <div id="accounts" class="accounts"></div>
+      </section>
+    </main>
+    <script src="./admin.js" defer></script>
+  </body>
+</html>

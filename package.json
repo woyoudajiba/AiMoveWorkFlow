@@ -1,0 +1,89 @@
+{
+  "name": "aiframe-studio",
+  "version": "2026.10.7-v5",
+  "clientVersion": "2026-10-07-v5",
+  "private": true,
+  "type": "module",
+  "description": "本地小说短剧制作工作台",
+  "author": "AiFrame Studio",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --host 127.0.0.1 --port 4317 --strictPort",
+    "server": "node server/index.mjs",
+    "build": "tsc --noEmit && vite build",
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs && node scripts/agent-check.mjs",
+    "agent": "node scripts/agent-cli.mjs",
+    "mcp": "node scripts/agent-mcp.mjs",
+    "pack:win": "npm run build && electron-builder --win --x64 --dir --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never && node scripts/write-update-manifest.mjs",
+    "dist:win:portable": "npm run build && electron-builder --win portable --x64 --publish never",
+    "smoke:electron": "node scripts/smoke-electron.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "sharp": "^0.35.5",
+    "zod": "^4.3.6"
+  },
+  "build": {
+    "appId": "com.aiframe.studio",
+    "productName": "映序",
+    "artifactName": "YingXu-${version}-win-${arch}-setup.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "asar": false,
+    "npmRebuild": false,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "server/**/*.mjs",
+      "agent/**/*.mjs",
+      "scripts/agent-cli.mjs",
+      "scripts/agent-mcp.mjs",
+      "docs/AGENT.md",
+      "docs/CONTRACT.md",
+      "docs/MOVEMENT-PLANNING-SPEC.md",
+      "docs/movement-language-library.txt",
+      "package.json",
+      "!**/.env*",
+      "!**/*.log",
+      "!**/credentials*",
+      "!node_modules/ffprobe-static/bin/darwin/**/*",
+      "!node_modules/ffprobe-static/bin/linux/**/*",
+      "!node_modules/ffprobe-static/bin/win32/ia32/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "executableName": "YingXu",
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "映序",
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "^44.5.1",
+    "electron-builder": "26.16.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.0"
+  }
+}

@@ -1,0 +1,28 @@
+.welcome-resume {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  max-width: 620px;
+  margin-top: 28px;
+  padding: 16px 18px;
+  background: #1a251d;
+  border: 1px solid #46614d;
+  border-radius: 6px;
+}
+
+.welcome-resume > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.welcome-resume .eyebrow { font-size: 9px; color: #7da28a; }
+.welcome-resume strong { font-size: 14px; font-weight: 500; color: #d1e1d5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.welcome-resume small { font-size: 10px; color: #78917e; }
+.welcome-resume .button { flex-shrink: 0; }
+
+@media (max-width: 680px) {
+  .welcome-resume { align-items: stretch; flex-direction: column; gap: 13px; margin-top: 24px; }
+  .welcome-resume .button { width: 100%; justify-content: center; }
+}
