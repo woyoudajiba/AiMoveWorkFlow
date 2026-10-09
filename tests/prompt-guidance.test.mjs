@@ -72,6 +72,8 @@ test('video guidance allows natural mouth movement but blocks unplanned speech',
   assert.match(VIDEO_GUIDANCE, /自然.*口部|呼吸.*口部|mouth/i);
   assert.match(VIDEO_GUIDANCE, /dialogue.*为空.*禁止.*人声|空.*dialogue.*禁止.*人声/i);
   assert.match(VIDEO_GUIDANCE, /群众.*吆喝|叫卖|环境人声/);
+  assert.match(VIDEO_GUIDANCE, /OCR|识别文字|参考图.*文字/);
+  assert.match(VIDEO_GUIDANCE, /不得.*朗读|不得.*转写|不得.*配音/);
 });
 
 test('media guidance keeps dialogue and narration out of rendered subtitles', () => {

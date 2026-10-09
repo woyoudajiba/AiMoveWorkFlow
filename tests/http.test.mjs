@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import {createHttpServer,authenticatedFetch as fetch} from './helpers/http-fixture.mjs';
 
 async function fixture(t){
@@ -22,7 +23,9 @@ test('local writes require explicit custom header and allowed origin',async t=>{
   const {url}=await fixture(t);
   assert.equal((await fetch(url+'/api/projects',{method:'POST',body:'{}'})).status,403);
   assert.equal((await fetch(url+'/api/projects',{method:'POST',headers:{'X-Local-Client':'aiframe',origin:'https://attacker.test','content-type':'application/json'},body:'{}'})).status,403);
-  assert.equal((await fetch(url+'/api/projects',{method:'POST',headers:{'X-Local-Client':'aiframe',origin:url,'content-type':'application/json'},body:'{"title":"test"}'})).status,200);
+  const created = await fetch(url+'/api/projects',{method:'POST',headers:{'X-Local-Client':'aiframe',origin:url,'content-type':'application/json'},body:JSON.stringify({title:'test',llmModel:'deepseek-v4-pro'})});
+  assert.equal(created.status,200);
+  assert.equal((await created.json()).llmModel,'deepseek-v4-pro');
 });
 test('configured cloud host and origin are accepted without weakening the source marker', async t => {
   const { url } = await fixture(t);
@@ -57,6 +60,40 @@ test('media full response advertises browser-playable MP4 metadata', async t => 
   assert.equal(response.headers.get('accept-ranges'), 'bytes');
   assert.equal(response.headers.get('content-length'), '10');
   assert.equal((await response.arrayBuffer()).byteLength, 10);
+});
+
+test('large JSON responses use gzip when the client advertises support', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'aiframe-gzip-http-'));
+  const server = await createHttpServer({
+    dataDir: dir,
+    distDir: dir,
+    config: { public: () => ({}) },
+    service: { get: async () => ({ id: 'p1', novel: '长文本'.repeat(12000), segments: [] }) },
+  });
+  t.after(async () => { await server.close(); await rm(dir, { recursive: true, force: true }); });
+  const response = await fetch(server.url + '/api/projects/p1', { headers: { 'Accept-Encoding': 'gzip' } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-encoding'), 'gzip');
+  assert.equal((await response.json()).novel.length, 36000);
+});
+
+test('media thumbnails are authenticated derived images and leave the original unchanged', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'aiframe-thumb-http-'));
+  const mediaDir = path.join(dir, 'media', 'p1');
+  await mkdir(mediaDir, { recursive: true });
+  const original = await sharp({ create: { width: 1200, height: 800, channels: 3, background: '#254a33' } }).png().toBuffer();
+  await writeFile(path.join(mediaDir, 'reference.png'), original);
+  const server = await createHttpServer({ dataDir: dir, distDir: dir, config: { public: () => ({}) }, service: {} });
+  t.after(async () => { await server.close(); await rm(dir, { recursive: true, force: true }); });
+  const thumbResponse = await fetch(`${server.url}/media-thumb/p1/reference.png`);
+  assert.equal(thumbResponse.status, 200);
+  assert.equal(thumbResponse.headers.get('content-type'), 'image/jpeg');
+  const thumb = Buffer.from(await thumbResponse.arrayBuffer());
+  const metadata = await sharp(thumb).metadata();
+  assert.ok((metadata.width ?? 0) <= 480);
+  assert.ok((metadata.height ?? 0) <= 480);
+  assert.deepEqual(Buffer.from(await (await fetch(`${server.url}/media/p1/reference.png`)).arrayBuffer()), original);
+  assert.deepEqual(await readFile(path.join(mediaDir, 'reference.png')), original);
 });
 test('project storyboard images receive the same account-scoped media URL as other assets', async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'aiframe-storyboard-http-'));
@@ -112,6 +149,25 @@ test('append analysis route keeps the authenticated write boundary', async t => 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { id: 'p1', accepted: true });
   assert.equal(calls, 1);
+});
+
+test('analysis pause and resume routes keep the authenticated write boundary', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'aiframe-pause-http-'));
+  const calls = [];
+  const server = await createHttpServer({ dataDir: dir, distDir: dir, config: { public: () => ({}) }, service: {
+    pauseAnalysis: async (id, jid) => { calls.push({ action: 'pause', id, jid }); return { id, status: 'paused' }; },
+    resumeJob: async (id, jid) => { calls.push({ action: 'resume', id, jid }); return { id, status: 'queued' }; },
+  } });
+  t.after(async () => { await server.close(); await rm(dir, { recursive: true, force: true }); });
+  const pauseEndpoint = `${server.url}/api/projects/p1/jobs/j1/pause`;
+  const resumeEndpoint = `${server.url}/api/projects/p1/jobs/j1/resume`;
+  assert.equal((await fetch(pauseEndpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 403);
+  assert.equal((await fetch(resumeEndpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 403);
+  const pauseResponse = await fetch(pauseEndpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Local-Client': 'aiframe' }, body: '{}' });
+  const resumeResponse = await fetch(resumeEndpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Local-Client': 'aiframe' }, body: '{}' });
+  assert.equal(pauseResponse.status, 200);
+  assert.equal(resumeResponse.status, 200);
+  assert.deepEqual(calls, [{ action: 'pause', id: 'p1', jid: 'j1' }, { action: 'resume', id: 'p1', jid: 'j1' }]);
 });
 
 test('history route returns only safe account-scoped media URLs and no physical paths',async t=>{

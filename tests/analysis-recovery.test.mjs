@@ -27,7 +27,7 @@ test('failed late chunk resumes from durable validated chunks without mixing fai
   });
   const progress=[];
   await assert.rejects(provider.analyze(project,'first',{onProgress:async x=>progress.push(x)}),e=>e.code==='ANALYSIS_INVALID');
-  assert.deepEqual(requested,[1,2,2]);
+  assert.deepEqual(requested,[1,2,2,2,2]);
   assert.ok(progress.some(p=>p.completedChunks===1&&p.totalChunks===2));
   const files=await readdir(path.join(root,'provider-receipts','analysis'));
   const saved=await readFile(path.join(root,'provider-receipts','analysis',files[0]),'utf8');
@@ -156,6 +156,20 @@ test('whitespace in known scene references is normalized without changing wardro
   const merged=prepareAnalysisChunk(data,emptyAnalysisState(),project);
   assert.equal(merged.looks[0].appearance,'米色风衣');
   assert.ok(merged.segments[0].shots.every(s=>s.sceneId===merged.scenes[0].id));
+});
+
+test('unsupported same-scene wardrobe conflicts remain blocked', () => {
+  const data = result();
+  data.characters = [{ id: 'lin', name: '林晚', aliases: [], appearance: '短发', evidence: '林晚' }];
+  data.looks = [
+    { id: 'look-day', sceneId: 'room', characterId: 'lin', name: '风衣', appearance: '米色风衣' },
+    { id: 'look-night', sceneId: 'room', characterId: 'lin', name: '衬衫', appearance: '白色衬衫' },
+  ];
+  for (const shot of data.segments[0].shots) shot.characterIds = ['lin'];
+  assert.throws(
+    () => prepareAnalysisChunk(data, emptyAnalysisState(), project),
+    error => error.code === 'ANALYSIS_INVALID' && error.message.includes('同一场景人物存在冲突造型'),
+  );
 });
 
 test('small model timing errors preserve shot content and proportions while fitting 15 and 30 seconds',()=>{

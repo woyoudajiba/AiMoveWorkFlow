@@ -10,11 +10,24 @@ export function isMissingProjectError(error: unknown) {
   const value = error as { status?: unknown; code?: unknown };
   return value.status === 404 && (value.code === 'NOT_FOUND' || value.code === 'PROJECT_NOT_FOUND');
 }
-let sessionId: string | null = null;
+const SESSION_STORAGE_KEY = 'aiframe-local-session';
+function storedSession() {
+  try {
+    const storage = typeof window !== 'undefined' ? window.sessionStorage : null;
+    const value = storage?.getItem(SESSION_STORAGE_KEY) || '';
+    return /^[a-f0-9]{64}$/.test(value) ? value : null;
+  } catch { return null; }
+}
+let sessionId: string | null = storedSession();
 let sessionVersion = 0;
 const authListeners = new Set<(error: ApiError) => void>();
 export function setApiSession(next: string | null) {
   if (next !== sessionId) { sessionId = next; sessionVersion++; }
+  try {
+    const storage = typeof window !== 'undefined' ? window.sessionStorage : null;
+    if (next) storage?.setItem(SESSION_STORAGE_KEY, next);
+    else storage?.removeItem(SESSION_STORAGE_KEY);
+  } catch { /* A blocked tab session store must not stop authentication. */ }
 }
 export function subscribeAuthFailure(listener: (error: ApiError) => void) {
   authListeners.add(listener);
@@ -29,8 +42,20 @@ function appBasePath() {
   return path === '/' ? '' : path.replace(/\/$/, '');
 }
 export function assetUrl(value: string | null | undefined) {
-  if (!value || !value.startsWith('/media/')) return value || '';
-  return `${appBasePath()}${value}`;
+  if (!value) return '';
+  const base = appBasePath();
+  if (value.startsWith('/media/')) return `${base}${value}`;
+  // Production is served below /workf/, so API responses may already carry
+  // the public base path. Do not prepend it twice.
+  if (base && value.startsWith(`${base}/media/`)) return value;
+  return value;
+}
+export function assetPreviewUrl(value: string | null | undefined) {
+  if (!value) return '';
+  const base = appBasePath();
+  if (value.startsWith('/media/')) return `${base}${value.replace(/^\/media\//, '/media-thumb/')}`;
+  if (base && value.startsWith(`${base}/media/`)) return `${base}/media-thumb/${value.slice(`${base}/media/`.length)}`;
+  return value;
 }
 export async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const requestSession = sessionId;

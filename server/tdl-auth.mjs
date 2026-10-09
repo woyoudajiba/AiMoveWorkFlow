@@ -150,11 +150,11 @@ export async function createTdlAuth({request=requestJson,load,save,now=Date.now,
       pendingValidation={generation:expected,promise:operation};
       return {...await operation};
     },
-    async logout(){
+    async logout({remote=true}={}){
       const previous=session;reset();
       let storageFailed=false,remoteRevoked=false;
       try{await persist(null);}catch{storageFailed=true;}
-      if(previous){
+      if(previous&&remote){
         try{
           const response=await request(`${AUTH_BASE}/api/auth/logout`,{...REQUEST_OPTIONS,method:'POST',headers:{Authorization:`Bearer ${previous.token}`}});
           remoteRevoked=response?.ok===true;
@@ -163,6 +163,27 @@ export async function createTdlAuth({request=requestJson,load,save,now=Date.now,
       // If neither local deletion nor remote revocation worked, do not claim a safe logout.
       if(storageFailed&&!remoteRevoked)throw authError('AUTH_UNAVAILABLE');
       return {ok:true,remoteRevoked};
+    },
+  };
+}
+
+// The HTTP service can serve several browser sessions at once. Keep the
+// upstream bearer token inside one adapter per local session instead of
+// sharing one mutable adapter across every account in the process.
+export function createTdlAuthFactory({request=requestJson,load,save,now=Date.now,validationTtlMs=30000,persistLogin=false}={}){
+  const canPersist=typeof load==='function'&&typeof save==='function';
+  const validId=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+  return {
+    rememberAvailable:canPersist,
+    async create(sessionId){
+      if(!validId(sessionId))throw new Error('Invalid local session ID.');
+      return createTdlAuth({
+        request,
+        now,
+        validationTtlMs,
+        persistLogin,
+        ...(canPersist?{load:()=>load(sessionId),save:value=>save(sessionId,value)}:{}),
+      });
     },
   };
 }

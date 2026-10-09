@@ -21,7 +21,7 @@ const define=(name,description,shape,{readOnly=false,paid=false}={})=>({name,des
 export const TOOL_DEFINITIONS=[
   define('studio_status','读取本地工作台连接状态、作品列表和模型已配置标记。不返回密钥。',{}, {readOnly:true}),
   define('list_board_templates','列出固定分镜设定板模板及每页分镜、三视图容量。只读，不调用模型。',{}, {readOnly:true}),
-  define('create_project','创建本地文本转视频项目，不调用模型。可传小说、剧本、论文、新闻或其他文章；新项目默认使用片段整板模式，AI 按内容决定 3–12 个镜头并只提交一次完整整板。visualStyle 用于锁定仿真人、2D 动画或 3D 动画媒介；narrativeMode 可选自动分析、旁白视角或主角视角；原文明确对白始终保留。',{title:text(160).min(1),novel:text(120000).min(1),style:text(2000).optional(),visualStyle:z.enum(['photorealistic','2d-animation','3d-animation']).optional(),sourceType:z.enum(['auto','novel','script','article','paper','news']).optional(),narrativeMode:z.enum(['auto','narrator','protagonist']).optional(),aspectRatio:z.enum(['9:16','16:9']).optional(),duration:z.union([z.literal(15),z.literal(30)]).optional(),durationMode:z.enum(['auto','fixed']).optional(),generationMode:z.enum(['segment-board','legacy-shot']).optional()}),
+  define('create_project','创建本地文本转视频项目，不调用模型。可传小说、剧本、论文、新闻或其他文章；新项目默认使用片段整板模式，AI 按内容决定 3–12 个镜头并只提交一次完整整板。visualStyle 用于锁定仿真人、2D 动画或 3D 动画媒介；narrativeMode 可选自动分析、旁白视角或主角视角；原文明确对白始终保留。',{title:text(160).min(1),novel:text(300000).min(1),style:text(2000).optional(),visualStyle:z.enum(['photorealistic','2d-animation','3d-animation']).optional(),sourceType:z.enum(['auto','novel','script','article','paper','news']).optional(),narrativeMode:z.enum(['auto','narrator','protagonist']).optional(),aspectRatio:z.enum(['9:16','16:9']).optional(),duration:z.union([z.literal(15),z.literal(30)]).optional(),durationMode:z.enum(['auto','fixed']).optional(),generationMode:z.enum(['segment-board','legacy-shot']).optional()}),
   define('get_project','读取角色、分镜、素材版本和任务。默认省略小说全文；需要时显式 includeNovel:true。',{...projectShape,includeNovel:z.boolean().optional()},{readOnly:true}),
   define('analyze_project','使用工作台当前选中的文字模型付费分析原始内容并规划可生成视频的镜头。已存在分析结果或同一作品的进行中/待核实任务时复用，不自动重发。',projectShape,{paid:true}),
   define('reset_duration','显式重置已分析作品的 15 / 30 秒片段规划。会清理当前角色、场景、分镜和当前导出指针，但保留原稿、项目历史台账和已导出历史；有进行中或待核实任务时拒绝。重置后必须重新分析。',{...projectShape,duration:z.union([z.literal(15),z.literal(30)]),durationMode:z.enum(['fixed','auto']).optional()}),
@@ -40,7 +40,8 @@ export const TOOL_DEFINITIONS=[
   define('approve_segment_board','仅在已实际检查整段分镜板及全部裁切画面后调用。reviewedVersion 必须为读取并检查的当前整板版本；审核通过后才允许提交片段视频。',{...segmentShape,reviewedVersion:text(4000).min(1)}),
   define('generate_video','付费提交单镜 Seedance。服务端按所属片段模式检查整板或全部逐镜审核；默认复用同版视频/当前任务，重做必须 regenerate:true。',{...shotShape,regenerate:z.boolean().optional()},{paid:true}),
   define('get_jobs','读取作品任务，或按 jobId 读取一个任务。不会生成、恢复或重发请求。',{...projectShape,jobId:id.optional()},{readOnly:true}),
-  define('resume_job','恢复已持久化的视频查询或图片下载回执。不会创建新的模型生成请求。',{...projectShape,jobId:id}),
+  define('pause_analysis','暂停当前文本分析并保存最近检查点。当前外部模型请求无法取消时，等结果返回后再落盘；不会创建新任务。',{...projectShape,jobId:id}),
+  define('resume_job','恢复已持久化的视频查询、图片下载回执或已暂停的文本分析。分析会从最近检查点继续，不会重复已完成块。',{...projectShape,jobId:id}),
   define('generate_segment_images','按作品模式生成片段画面：segment-board 只付费提交一次完整片段整板，AI 决定 3–12 个镜头并同时生成妆造参考，再由服务端裁切镜头；legacy-shot 才逐镜补缺图。不会批准分镜。',segmentShape,{paid:true}),
   define('generate_segment_videos','付费填充已审核片段缺失的视频。保留当前视频；旧版视频须逐镜明确重做。',segmentShape,{paid:true}),
   define('set_board_template','保存片段设定板模板偏好，不改变分镜、素材版本或审核。正在导出的片段不能切换模板。',{...segmentShape,templateId}),
@@ -129,7 +130,7 @@ export function createAgent(options={}){
     analyze_project:async args=>{
       const project=await get(args.projectId);
       if(project.segments?.length||project.characters?.length)return result(project,true,'existing_analysis');
-      const job=project.jobs?.find(item=>item.kind==='analyze'&&['queued','running','unknown'].includes(item.status));
+      const job=project.jobs?.find(item=>item.kind==='analyze'&&['queued','running','paused','unknown'].includes(item.status));
       if(job)return {...result(project,true,'existing_analysis_task'),job};
       return result(await client.request(`/api/projects/${project.id}/analyze`,'POST',{}));
     },
@@ -160,6 +161,7 @@ export function createAgent(options={}){
       if(!args.jobId)return {projectId:project.id,jobs:project.jobs??[]};
       const job=project.jobs?.find(item=>item.id===args.jobId);if(!job)throw agentError('NOT_FOUND','找不到该任务。');return {projectId:project.id,job};
     },
+    pause_analysis:async args=>result(await client.request(`/api/projects/${args.projectId}/jobs/${args.jobId}/pause`,'POST',{})),
     resume_job:async args=>result(await client.request(`/api/projects/${args.projectId}/jobs/${args.jobId}/resume`,'POST',{})),
     generate_segment_images:args=>generateSegment(args,'image'),
     generate_segment_videos:args=>generateSegment(args,'video'),

@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createProject, validateAnalysis, validateSegment, updateShotFields } from '../server/domain.mjs';
+import { createProject, projectInput, validateAnalysis, validateSegment, updateShotFields } from '../server/domain.mjs';
+import { DEFAULT_LLM_MODEL } from '../server/llm-models.mjs';
 
 function analysis(duration = 30) {
   return { characters: [{ id: 'hero', name: '林遥', role: 'protagonist', aliases: [], appearance: '蓝色外套', evidence: '林遥走进书店。' }], segments: [{ title: '归来', summary: '重逢', duration, shots: Array.from({ length: 9 }, (_, i) => ({ scene: '书店', action: '抬头', camera: '近景', dialogue: '', characterIds: ['hero'], duration: i === 8 ? duration - 8 * 3 : 3 })) }] };
 }
+
+test('projects keep a validated text model selection with a stable default', () => {
+  assert.equal(createProject({ title: '默认模型', novel: '正文' }).llmModel, DEFAULT_LLM_MODEL);
+  assert.equal(createProject({ title: 'DeepSeek 项目', novel: '正文', llmModel: 'deepseek-v4-pro' }).llmModel, 'deepseek-v4-pro');
+  assert.throws(() => createProject({ title: '未知模型', novel: '正文', llmModel: 'unknown-model' }), /文字模型/);
+});
 
 test('analysis requires exactly nine shots, valid character references and exact segment duration', () => {
   const project = createProject({ title: '作品', novel: '正文', duration: 30 });
@@ -80,6 +87,34 @@ test('automatic duration accepts mixed 15 and 30 second segments while fixed mod
   assert.throws(() => createProject({ title: '无效模式', durationMode: 'random' }), /时长模式/);
   const invalid = structuredClone(mixed); invalid.segments[0].duration = 20;
   assert.throws(() => validateAnalysis(invalid, auto), /15|30/);
+});
+
+test('new segment-board projects cap every segment at fifteen seconds', () => {
+  const project = createProject({ title: '十五秒上限', novel: '正文', duration: 15, durationMode: 'auto', generationMode: 'segment-board' });
+  const segment = {
+    id: 'segment-15', number: 1, title: '短片段', summary: '动作', duration: 15,
+    shots: Array.from({ length: 3 }, (_, index) => ({
+      id: `shot-${index + 1}`, number: index + 1, scene: '山门', action: '动作', camera: '中景', dialogue: '',
+      characterIds: [], duration: 5,
+    })),
+  };
+  assert.equal(validateSegment(segment, { generationMode: 'segment-board', durationMode: project.durationMode, projectDuration: project.duration }), segment);
+  assert.throws(() => validateSegment({ ...segment, duration: 16, shots: segment.shots.map(shot => ({ ...shot, duration: 16 / 3 })) }, { generationMode: 'segment-board', durationMode: project.durationMode, projectDuration: project.duration }), /15/);
+  assert.throws(() => createProject({ title: '禁止三十秒故事板', novel: '正文', duration: 30, durationMode: 'auto', generationMode: 'segment-board' }), /15/);
+  assert.throws(() => createProject({ title: '禁止固定故事板', novel: '正文', duration: 15, durationMode: 'fixed', generationMode: 'segment-board' }), /auto/);
+  const legacy = projectInput({ id: 'legacy-project', title: '旧故事板', novel: '正文', duration: 30, durationMode: 'auto', generationMode: 'segment-board' });
+  assert.deepEqual({ duration: legacy.duration, durationMode: legacy.durationMode }, { duration: 30, durationMode: 'auto' });
+});
+
+test('segment-board analysis candidates never accept a legacy thirty-second segment', () => {
+  const legacy = createProject({ id: 'legacy-board', title: '旧故事板分析', novel: '正文', duration: 30, durationMode: 'fixed', generationMode: 'segment-board' });
+  assert.equal(legacy.duration, 30);
+  assert.throws(() => validateAnalysis(analysis(30), legacy), /15/);
+
+  const candidate = analysis(15);
+  candidate.segments[0].shots = candidate.segments[0].shots.map((shot, index) => ({ ...shot, duration: index === 8 ? 3 : 1.5 }));
+  const accepted = validateAnalysis(candidate, legacy);
+  assert.equal(accepted.segments[0].duration, 15);
 });
 
 test('analysis preserves scene-specific looks and rejects ambiguous or unknown references', () => {

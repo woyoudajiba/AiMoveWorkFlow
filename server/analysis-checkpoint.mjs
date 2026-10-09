@@ -5,13 +5,13 @@ import { validateAnalysis } from './domain.mjs';
 import { emptyAnalysisState } from './analysis-results.mjs';
 import { safeError } from './network.mjs';
 
-const VERSION = 2;
+const VERSION = 3;
 
-export async function openAnalysisCheckpoint(root, project, model, totalChunks, enabled, { retryUncertain = false, sourceText = project.novel, appendFrom = 0, mode = 'full', initialState = null } = {}) {
+export async function openAnalysisCheckpoint(root, project, model, totalChunks, enabled, { retryUncertain = false, retryDeterministic = false, sourceText = project.novel, appendFrom = 0, mode = 'full', initialState = null } = {}) {
   const fingerprint = createHash('sha256').update(JSON.stringify({
     version: VERSION, novel: project.novel, sourceText, appendFrom, mode, style: project.style,
     aspectRatio: project.aspectRatio, narrativeMode: project.narrativeMode ?? 'auto', duration: project.duration,
-    durationMode: project.durationMode ?? 'fixed', model, totalChunks,
+    durationMode: project.durationMode ?? 'fixed', analysisSegmentMaxDuration: 15, model, totalChunks,
   })).digest('hex');
   if (enabled && !/^[A-Za-z0-9_-]{1,100}$/.test(project.id ?? '')) throw safeError('分析作品标识无效。', 'INVALID_INPUT');
   const file = enabled ? path.join(root, `${project.id}-${fingerprint}.json`) : null;
@@ -33,7 +33,7 @@ export async function openAnalysisCheckpoint(root, project, model, totalChunks, 
       if (error.code !== 'ENOENT') throw safeError('分析进度文件无法校验，请保留文件并检查；不会自动从头重复提交。', 'ANALYSIS_CHECKPOINT_INVALID');
     }
   }
-  if (['pending', 'correcting'].includes(snapshot.phase) && retryUncertain !== true) {
+  if (['pending', 'correcting'].includes(snapshot.phase) && retryUncertain !== true && retryDeterministic !== true) {
     const label = snapshot.phase === 'correcting' ? '纠正请求' : '提交';
     throw safeError(`第 ${snapshot.nextChunk + 1}/${totalChunks} 块的${label}结果仍待核实，已完成块保留；不会自动重复提交。`, 'SUBMISSION_UNKNOWN');
   }

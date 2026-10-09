@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Download, Eye, LayoutTemplate, RefreshCw } from 'lucide-react';
 import { Badge, Notice, Spinner } from './components';
-import { assetUrl } from './api';
+import { assetPreviewUrl, assetUrl } from './api';
 import { planBoardPages } from './board-plan';
 import { pad, type BoardPage, type BoardTemplate, type BoardTemplateCatalog, type Shot } from './types';
 
@@ -57,7 +57,7 @@ function BoardPageImage({ page, index, compact }: { page: BoardPage; index: numb
   const [reload, setReload] = useState(0);
   const source = reload ? `${page.gridUrl}${page.gridUrl.includes('?') ? '&' : '?'}reload=${reload}` : page.gridUrl;
   return <div className={`preview-image-scroll board-page-image ${status}`}>
-    <a href={assetUrl(page.gridUrl)} target="_blank" rel="noreferrer" aria-label={`放大设定板第 ${index + 1} 页`}><img key={source} className="preview-board-image" src={assetUrl(source)} alt={`设定板第 ${index + 1} 页${page.continuation ? '，造型续页' : ''}${page.shotNumbers.length ? `，镜头 ${page.shotNumbers.map(pad).join('、')}` : ''}`} loading={compact ? 'lazy' : 'eager'} onLoad={() => setStatus('loaded')} onError={() => setStatus('failed')} /></a>
+    <a href={assetUrl(page.gridUrl)} target="_blank" rel="noreferrer" aria-label={`放大设定板第 ${index + 1} 页`}><img key={source} className="preview-board-image" src={assetPreviewUrl(source)} alt={`设定板第 ${index + 1} 页${page.continuation ? '，造型续页' : ''}${page.shotNumbers.length ? `，镜头 ${page.shotNumbers.map(pad).join('、')}` : ''}`} loading={compact ? 'lazy' : 'eager'} onLoad={() => setStatus('loaded')} onError={() => setStatus('failed')} /></a>
     {status === 'loading' && <div className="board-page-image-status" role="status"><Spinner size={18} /><span>正在载入第 {index + 1} 页</span></div>}
     {status === 'failed' && <div className="board-page-image-error" role="alert"><p>本页图片未能加载，可以重新加载当前页面。</p><button className="button small secondary" onClick={() => { setStatus('loading'); setReload(previous => Math.max(previous + 1, Date.now())); }}><RefreshCw size={13} />重新加载本页</button><p>如果仍无法加载，请尝试“放大本页”或重新导出设定板。</p></div>}
   </div>;

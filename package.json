@@ -1,7 +1,7 @@
 {
   "name": "aiframe-studio",
-  "version": "2026.10.7-v5",
-  "clientVersion": "2026-10-07-v5",
+  "version": "2026.10.9-v16",
+  "clientVersion": "2026-10-09-v16",
   "private": true,
   "type": "module",
   "description": "本地小说短剧制作工作台",

@@ -11,6 +11,7 @@ import {getBoardTemplate} from './board-templates.mjs';
 const MAX_IMAGE=20*1024*1024;
 const idPattern=/^[A-Za-z0-9_-]{1,100}$/;
 const inRoot=(root,target)=>target===root || target.startsWith(root+path.sep);
+let mediaToolsPromise;
 function assertId(id){if(typeof id!=='string'||!idPattern.test(id))throw safeError('项目标识无效。','INVALID_PATH');}
 
 export async function resolveMediaPath(mediaRoot,projectId,url) {
@@ -26,7 +27,47 @@ export async function resolveMediaPath(mediaRoot,projectId,url) {
   return actual;
 }
 
-export async function ffmpegAvailable(){try{await Promise.all([access(ffmpegPath),access(ffprobeStatic.path)]);return true;}catch{return false;}}
+// Thumbnails are derived on demand and never replace the original media file.
+// The caller must perform account authorization before invoking this helper.
+export async function createMediaThumbnail(mediaRoot, projectId, url, { width = 480, height = 480, quality = 72 } = {}) {
+  const file = await resolveMediaPath(mediaRoot, projectId, url);
+  return sharp(file, { limitInputPixels: 40_000_000, animated: false })
+    .rotate()
+    .resize(width, height, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality, progressive: true, chromaSubsampling: '4:2:0' })
+    .toBuffer();
+}
+
+async function commandAvailable(command){
+  if(typeof command!=='string'||!command.trim())return false;
+  return new Promise(resolve=>{
+    let child;
+    try{child=spawn(command,['-version'],{shell:false,windowsHide:true,stdio:['ignore','ignore','ignore']});}
+    catch{return resolve(false);}
+    const timer=setTimeout(()=>{child.kill();resolve(false);},5000);
+    const finish=available=>{clearTimeout(timer);resolve(available);};
+    child.once('error',()=>finish(false));
+    child.once('close',code=>finish(code===0));
+  });
+}
+
+async function resolveMediaTools(){
+  if(mediaToolsPromise)return mediaToolsPromise;
+  mediaToolsPromise=(async()=>{
+    const resolveTool=async(staticPath,envName,command)=>{
+      const candidates=[process.env[envName],staticPath,command].filter((value,index,list)=>typeof value==='string'&&value.trim()&&list.indexOf(value)===index);
+      for(const candidate of candidates)if(await commandAvailable(candidate))return candidate;
+      throw safeError('本地视频工具不可用，请配置 FFmpeg/FFprobe 路径或安装系统命令。','FFMPEG_UNAVAILABLE');
+    };
+    return {
+      ffmpeg:await resolveTool(ffmpegPath,'AIFRAME_FFMPEG_PATH','ffmpeg'),
+      ffprobe:await resolveTool(ffprobeStatic?.path,'AIFRAME_FFPROBE_PATH','ffprobe')
+    };
+  })();
+  try{return await mediaToolsPromise;}catch(error){mediaToolsPromise=null;throw error;}
+}
+
+export async function ffmpegAvailable(){try{await resolveMediaTools();return true;}catch{return false;}}
 
 export function runProcess(command,args,{timeoutMs=120000,maxOutput=1024*1024}={}) {
   return new Promise((resolve,reject)=>{
@@ -45,13 +86,14 @@ export function runProcess(command,args,{timeoutMs=120000,maxOutput=1024*1024}={
 
 export async function probeVideo(file,{decode=false,minDuration=0}={}) {
   let info;
-  try{info=JSON.parse(await runProcess(ffprobeStatic.path,['-v','error','-protocol_whitelist','file,pipe','-f','mov','-show_streams','-show_format','-of','json',file]));}
+  const {ffmpeg,ffprobe}=await resolveMediaTools();
+  try{info=JSON.parse(await runProcess(ffprobe,['-v','error','-protocol_whitelist','file,pipe','-f','mov','-show_streams','-show_format','-of','json',file]));}
   catch(error){if(error.safe)throw error;throw safeError('视频信息无法解析。','MEDIA_INVALID');}
   const stream=info.streams?.find(s=>s.codec_type==='video');
   const duration=Number(info.format?.duration??stream?.duration);
   if(!stream || !info.format?.format_name?.split(',').some(v=>['mov','mp4','m4a','3gp','3g2','mj2'].includes(v)) || !Number.isFinite(duration)||duration<=0||duration>120 || stream.width<16||stream.height<16||stream.width>8192||stream.height>8192)throw safeError('视频格式、尺寸或时长无效。','MEDIA_INVALID');
   if(duration+0.05<minDuration)throw safeError('上游视频时长不足以覆盖剪辑入点和镜头时长。','VIDEO_TOO_SHORT');
-  if(decode)await runProcess(ffmpegPath,['-v','error','-xerror','-protocol_whitelist','file,pipe','-f','mov','-i',file,'-map','0:v:0','-f','null','-']);
+  if(decode)await runProcess(ffmpeg,['-v','error','-xerror','-protocol_whitelist','file,pipe','-f','mov','-i',file,'-map','0:v:0','-f','null','-']);
   return {duration,width:stream.width,height:stream.height,hasAudio:info.streams.some(s=>s.codec_type==='audio')};
 }
 
@@ -149,7 +191,7 @@ function storyboardManifest(project,segment,shots,kind){
       const look=usedLooks.get(mapping.mappingKey);const character=characters.find(item=>item.id===mapping.characterId);
       return look.referenceCurrent&&look.approved&&character.referenceCurrent&&character.approved;
     });
-    return {id:shot.id,number:shot.number,version:shot.version,imageVersion:shot.imageVersion??null,image:shot.image,imageCurrent:imageStatus==='current',imageStatus,duration:shot.duration,trimStart:shot.trimStart??0,sceneId:scene?.id??null,sceneName:scene?.name??'',scene:shot.scene??'',action:shot.action??'',camera:shot.camera??'',movementId:shot.movementId??'',movementPlan:shot.movementPlan??'',transitionPlan:shot.transitionPlan??'',dialogue:shot.dialogue??'',sourceEvidence:shot.sourceEvidence??'',characterIds:[...shot.characterIds],characterNames:shot.characterIds.map(id=>characterMap.get(id).name),lookIds:mappings.map(item=>item.lookId).filter(Boolean),lookMappings:mappings,approved:shot.approved===true,reviewStatus:shot.approved&&imageStatus==='current'&&referencesCurrent&&!!scene?'approved':'needs_review'};
+    return {id:shot.id,number:shot.number,version:shot.version,imageVersion:shot.imageVersion??null,image:shot.image,imageCurrent:imageStatus==='current',imageStatus,duration:shot.duration,trimStart:shot.trimStart??0,sceneId:scene?.id??null,sceneName:scene?.name??'',scene:shot.scene??'',action:shot.action??'',camera:shot.camera??'',movementId:shot.movementId??'',movementPlan:shot.movementPlan??'',transitionPlan:shot.transitionPlan??'',dialogue:shot.dialogue??'',dialogueSpeakerId:shot.dialogueSpeakerId??'',sourceEvidence:shot.sourceEvidence??'',characterIds:[...shot.characterIds],characterNames:shot.characterIds.map(id=>characterMap.get(id).name),lookIds:mappings.map(item=>item.lookId).filter(Boolean),lookMappings:mappings,approved:shot.approved===true,reviewStatus:shot.approved&&imageStatus==='current'&&referencesCurrent&&!!scene?'approved':'needs_review'};
   });
   if(looks.length>18)throw safeError('单个片段最多容纳 18 组场景角色造型，请拆分片段后导出；未省略任何角色。','BOARD_CAPACITY');
   const statuses=[...reviewShots.map(shot=>shot.imageStatus),...(segmentBoard?[]:characters.map(character=>character.referenceStatus)),...(segmentBoard?[]:looks.map(look=>look.referenceStatus))];
@@ -281,6 +323,7 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
   }
   async function downloadVideo(project,url,shot,{minDuration=4}={}){
     const bytes=await download(url,{maxBytes:250*1024*1024,timeoutMs:180000});
+    const {ffmpeg}=await resolveMediaTools();
     const dir=await directory(project);const name=`${randomUUID()}.mp4`;const raw=path.join(dir,`${name}.download.tmp`);const normalized=path.join(dir,`${name}.normalized.tmp.mp4`);const requiredDuration=shot?Math.max(minDuration,Math.ceil(Number(shot.trimStart||0)+Number(shot.duration))):0;
     try{
       await writeFile(raw,bytes,{flag:'wx'});
@@ -292,13 +335,14 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
       // unintended voices; local normalization must not decide which speech is
       // meaningful and silently remove it.
       const audioArgs = ['-map','0:a?','-c:a','aac','-b:a','128k'];
-      await runProcess(ffmpegPath,['-v','error','-y','-i',raw,'-map','0:v:0',...audioArgs,'-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-movflags','+faststart',normalized],{timeoutMs:180000});
+      await runProcess(ffmpeg,['-v','error','-y','-i',raw,'-map','0:v:0',...audioArgs,'-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-movflags','+faststart',normalized],{timeoutMs:180000});
       await probeVideo(normalized,{decode:true,minDuration:requiredDuration});
       await rename(normalized,path.join(dir,name));
       return `/media/${project.id}/${name}`;
     }finally{await rm(raw,{force:true});await rm(normalized,{force:true});}
   }
   async function renderVideoPart({source,sourceInfo,output,duration,trimStart=0,width,height,withAudio}){
+    const {ffmpeg}=await resolveMediaTools();
     const args=['-v','error','-y','-ss',String(trimStart),'-i',source];
     if(withAudio&&!sourceInfo.hasAudio)args.push('-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=48000');
     args.push('-map','0:v:0');
@@ -307,7 +351,7 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
     if(withAudio)args.push('-c:a','aac','-ar','48000','-ac','2','-af','apad');
     else args.push('-an');
     args.push('-movflags','+faststart',output);
-    await runProcess(ffmpegPath,args);
+    await runProcess(ffmpeg,args);
   }
   async function cleanupVideos(project,urls){
     if(!Array.isArray(urls)||urls.length>1200)throw safeError('待清理视频清单无效。','OUTPUT_CLEANUP_INVALID');
@@ -521,7 +565,8 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
     const shots=[...segment.shots].sort((a,b)=>a.number-b.number);
     if(shots.some((s,i)=>s.number!==i+1||!s.image))throw safeError(`预览需要按 1–${shots.length} 连续编号的完整分镜图片。`,'EXPORT_INCOMPLETE');
     const flexibleDuration=segmentBoard&&project.durationMode==='auto';
-    if((flexibleDuration?(segment.duration<3||segment.duration>30):![15,30].includes(segment.duration))||shots.some(s=>!Number.isFinite(s.duration)||s.duration<=0||s.duration>15)||Math.abs(shots.reduce((sum,s)=>sum+s.duration,0)-segment.duration)>0.01)throw safeError('分镜总时长与片段时长不符。','EXPORT_DURATION');
+    const maximumDuration=project.duration===30?30:15;
+    if((flexibleDuration?(segment.duration<3||segment.duration>maximumDuration):![15,30].includes(segment.duration))||shots.some(s=>!Number.isFinite(s.duration)||s.duration<=0||s.duration>15)||Math.abs(shots.reduce((sum,s)=>sum+s.duration,0)-segment.duration)>0.01)throw safeError('分镜总时长与片段时长不符。','EXPORT_DURATION');
     const manifest=storyboardManifest(project,segment,shots,'storyboard-preview');
     const plans=storyboardPages(manifest,template);
     // Resolve every source before creating an artifact directory. The shared
@@ -541,13 +586,15 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
     }catch(error){await rm(temp,{recursive:true,force:true});throw error;}
   }
   async function exportSegment(project,segment){
+    const {ffmpeg}=await resolveMediaTools();
     const template=selectBoardTemplate(segment);
     const segmentBoard=project.generationMode==='segment-board';
     const minimumShots=segmentBoard?3:9,maximumShots=segmentBoard?12:9;
     if(!Number.isInteger(segment.number)||segment.number<1)throw safeError('片段编号无效。','INVALID_EXPORT');
     if(!Array.isArray(segment.shots)||segment.shots.length<minimumShots||segment.shots.length>maximumShots)throw safeError(`导出需要完整的 ${minimumShots === maximumShots ? minimumShots : `${minimumShots} 到 ${maximumShots}`} 个分镜。`,'EXPORT_INCOMPLETE');
     const flexibleDuration=segmentBoard&&project.durationMode==='auto';
-    if(flexibleDuration?(segment.duration<3||segment.duration>30):![15,30].includes(segment.duration))throw safeError(flexibleDuration?'自动片段时长必须在 3 到 30 秒之间。':'片段时长必须是 15 或 30 秒。','EXPORT_DURATION');
+    const maximumDuration=project.duration===30?30:15;
+    if(flexibleDuration?(segment.duration<3||segment.duration>maximumDuration):![15,30].includes(segment.duration))throw safeError(flexibleDuration?`自动片段时长必须在 3 到 ${maximumDuration} 秒之间。`:'片段时长必须是 15 或 30 秒。','EXPORT_DURATION');
     const shots=[...segment.shots].sort((a,b)=>a.number-b.number);
     if(shots.some((s,i)=>s.number!==i+1))throw safeError(`分镜编号必须依次为 1–${shots.length}。`,'EXPORT_INCOMPLETE');
     if(segmentBoard){
@@ -595,7 +642,7 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
        const concatArgs=['-v','error','-y','-f','concat','-safe','1','-i',path.join(temp,'concat.txt'),'-map','0:v:0'];
        if(withAudio)concatArgs.push('-map','0:a:0');else concatArgs.push('-an');
        concatArgs.push('-c','copy','-movflags','+faststart',videoFile);
-       await runProcess(ffmpegPath,concatArgs);
+       await runProcess(ffmpeg,concatArgs);
       const resultInfo=await probeVideo(videoFile,{decode:true,minDuration:segment.duration-0.05});
       if(Math.abs(resultInfo.duration-segment.duration)>0.15)throw safeError('导出时长校验失败。','EXPORT_DURATION');
       const pages=await writeStoryboardPages(project,manifest,template,plans,temp,base);
@@ -609,6 +656,7 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
     }catch(error){await rm(temp,{recursive:true,force:true});throw error;}
   }
   async function exportProject(project, segments){
+    const {ffmpeg}=await resolveMediaTools();
     if(!Array.isArray(segments)||!segments.length)throw safeError('项目没有可导出的片段。','EXPORT_INCOMPLETE');
     const ordered=[...segments].sort((a,b)=>a.number-b.number);
     if(project.generationMode==='segment-board'){
@@ -622,7 +670,7 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
       try{
         for(const [index,item] of sources.entries())await renderVideoPart({source:item.file,sourceInfo:item.info,output:path.join(temp,`part-${index}.mp4`),duration:item.segment.duration,trimStart:0,width,height,withAudio});
         await writeFile(path.join(temp,'concat.txt'),sources.map((_,index)=>`file 'part-${index}.mp4'`).join('\n'),'utf8');
-        const videoFile=path.join(temp,'project.mp4');const concatArgs=['-v','error','-y','-f','concat','-safe','1','-i',path.join(temp,'concat.txt'),'-map','0:v:0'];if(withAudio)concatArgs.push('-map','0:a:0');else concatArgs.push('-an');concatArgs.push('-c','copy','-movflags','+faststart',videoFile);await runProcess(ffmpegPath,concatArgs);
+        const videoFile=path.join(temp,'project.mp4');const concatArgs=['-v','error','-y','-f','concat','-safe','1','-i',path.join(temp,'concat.txt'),'-map','0:v:0'];if(withAudio)concatArgs.push('-map','0:a:0');else concatArgs.push('-an');concatArgs.push('-c','copy','-movflags','+faststart',videoFile);await runProcess(ffmpeg,concatArgs);
         const info=await probeVideo(videoFile,{decode:true,minDuration:ordered.reduce((sum,segment)=>sum+segment.duration,0)-0.1});
         const firstImage=await resolveMediaPath(mediaRoot,project.id,ordered[0].shots.find(shot=>shot.image)?.image);const cover=await sharp(firstImage).resize(width,height,{fit:'contain',background:'#101711'}).jpeg({quality:88}).toBuffer();await writeFile(path.join(temp,'project.jpg'),cover);
         const manifest={kind:'project-export',projectId:project.id,title:project.title,aspectRatio:project.aspectRatio,duration:info.duration,width,height,fps:30,audio:withAudio?'present':'muted',segments:ordered.map(segment=>({id:segment.id,number:segment.number,title:segment.title,duration:segment.duration,video:segment.video,videoVersion:segment.videoVersion})),shots:ordered.flatMap(segment=>[...segment.shots].sort((a,b)=>a.number-b.number).map(shot=>({id:shot.id,number:shot.number,segmentId:segment.id,segmentNumber:segment.number,segmentTitle:segment.title,scene:shot.scene,action:shot.action,camera:shot.camera,movementId:shot.movementId??'',movementPlan:shot.movementPlan??'',transitionPlan:shot.transitionPlan??'',dialogue:shot.dialogue,plannedDuration:shot.duration,source:segment.video,videoVersion:segment.videoVersion})))};
@@ -645,7 +693,7 @@ export function createMediaStore(mediaRoot,{download=requestBuffer,outputRoot=nu
         await renderVideoPart({source:sources[index].file,sourceInfo:sources[index].info,output:path.join(temp,`part-${index}.mp4`),duration:frames[index]/30,trimStart:shots[index].trimStart??0,width,height,withAudio});
       }
       await writeFile(path.join(temp,'concat.txt'),shots.map((_,index)=>`file 'part-${index}.mp4'`).join('\n'),'utf8');
-      const videoFile=path.join(temp,`${prefix}.mp4`);const concatArgs=['-v','error','-y','-f','concat','-safe','1','-i',path.join(temp,'concat.txt'),'-map','0:v:0'];if(withAudio)concatArgs.push('-map','0:a:0');else concatArgs.push('-an');concatArgs.push('-c','copy','-movflags','+faststart',videoFile);await runProcess(ffmpegPath,concatArgs);
+      const videoFile=path.join(temp,`${prefix}.mp4`);const concatArgs=['-v','error','-y','-f','concat','-safe','1','-i',path.join(temp,'concat.txt'),'-map','0:v:0'];if(withAudio)concatArgs.push('-map','0:a:0');else concatArgs.push('-an');concatArgs.push('-c','copy','-movflags','+faststart',videoFile);await runProcess(ffmpeg,concatArgs);
       const resultInfo=await probeVideo(videoFile,{decode:true,minDuration:total-0.05});if(Math.abs(resultInfo.duration-total)>0.2)throw safeError('项目成片时长校验失败。','EXPORT_DURATION');
       const firstImageSource=await resolveMediaPath(mediaRoot,project.id,shots[0].image);const firstImage=await sharp(firstImageSource).resize(960,540,{fit:'contain',background:'#101711'}).jpeg({quality:88}).toBuffer();await writeFile(path.join(temp,'project.jpg'),firstImage);
       const manifest={kind:'project-export',projectId:project.id,title:project.title,aspectRatio:project.aspectRatio,duration:resultInfo.duration,width,height,fps:30,audio:withAudio?'present':'muted',segments:ordered.map(segment=>({id:segment.id,number:segment.number,title:segment.title,duration:segment.duration})),shots:shots.map((shot,index)=>({id:shot.id,number:shot.number,segmentId:shot.segmentId,segmentNumber:shot.segmentNumber,segmentTitle:shot.segmentTitle,scene:shot.scene,action:shot.action,camera:shot.camera,movementId:shot.movementId??'',movementPlan:shot.movementPlan??'',transitionPlan:shot.transitionPlan??'',dialogue:shot.dialogue,plannedDuration:shot.duration,exportedDuration:frames[index]/30,source:shot.video,videoVersion:shot.videoVersion}))};

@@ -1,7 +1,9 @@
 import http from 'node:http';
 import {createReadStream} from 'node:fs';
 import {stat,realpath} from 'node:fs/promises';
+import {gzipSync} from 'node:zlib';
 import path from 'node:path';
+import {createMediaThumbnail} from './media.mjs';
 import {DEFAULT_BOARD_TEMPLATE_ID,BOARD_TEMPLATES} from './board-templates.mjs';
 import {createLocalSession} from './local-session.mjs';
 import {accountKey} from './workspaces.mjs';
@@ -13,12 +15,21 @@ const MEDIA_FIELDS=new Set(['image','video','reference','storyboardImage','gridU
 const cleanPathPrefix=value=>{const text=typeof value==='string'?value.trim():'';if(!text||text==='/')return '';return `/${text.replace(/^\/+|\/+$/g,'')}`;};
 const publicBasePath=cleanPathPrefix(process.env.AI_FRAME_BASE_PATH);
 function json(res,status,data){
-  res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});
-  res.end(JSON.stringify(data,(key,value)=>{
+  const payload=Buffer.from(JSON.stringify(data,(key,value)=>{
     if(!MEDIA_FIELDS.has(key)||typeof value!=='string'||!value.startsWith('/media/'))return value;
     const exposed=`${publicBasePath}${value}`;
-    return res.accountKey?`${exposed}?account=${res.accountKey}`:exposed;
+    if(!res.accountKey)return exposed;
+    const query=new URLSearchParams({account:res.accountKey,...(res.sessionId?{session:res.sessionId}:{})});
+    return `${exposed}?${query}`;
   }));
+  const compressed=res.acceptsGzip&&payload.length>=16*1024?gzipSync(payload):null;
+  res.writeHead(status,{
+    'Content-Type':'application/json; charset=utf-8',
+    'Cache-Control':'no-store',
+    'Vary':'Accept-Encoding',
+    ...(compressed?{'Content-Encoding':'gzip'}:{}),
+  });
+  res.end(compressed||payload);
 }
 async function body(req,limit=BODY_LIMIT){
   if(req.parsedBody)return req.parsedBody;
@@ -52,11 +63,26 @@ async function sendFile(req,res,root,name,privateMedia=false,download=false){
   const stream=createReadStream(file,{start,end});stream.on('error',()=>res.destroy());stream.pipe(res);
 }
 
-export async function createHttpServer({auth,workspaces,distDir,downloadsDir=null,adminDir=path.join(distDir,'admin'),adminAuth=null,port=0,allowDevOrigin=false}){
-  if(!auth||!workspaces)throw new Error('Authentication and account workspaces are required.');
-  const sessions=createLocalSession(auth);
+async function sendThumbnail(req, res, mediaRoot, projectId, relative) {
+  const original = `/media/${projectId}/${relative}`;
+  const image = await createMediaThumbnail(mediaRoot, projectId, original);
+  const headers = {
+    'Content-Type': 'image/jpeg',
+    'Content-Length': image.length,
+    'Cache-Control': 'private, max-age=600',
+    'X-Content-Type-Options': 'nosniff',
+  };
+  res.writeHead(200, headers);
+  if (req.method !== 'HEAD') res.end(image);
+  else res.end();
+}
+
+export async function createHttpServer({auth,authFactory,workspaces,distDir,downloadsDir=null,adminDir=path.join(distDir,'admin'),adminAuth=null,port=0,allowDevOrigin=false}){
+  if((!auth&&!authFactory)||!workspaces)throw new Error('Authentication and account workspaces are required.');
+  const sessions=createLocalSession(auth,{factory:authFactory});
   let address;
   const server=http.createServer(async(req,res)=>{
+    res.acceptsGzip=/\bgzip\b/i.test(String(req.headers['accept-encoding']||''));
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Referrer-Policy','no-referrer');
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
@@ -104,10 +130,11 @@ export async function createHttpServer({auth,workspaces,distDir,downloadsDir=nul
       if(pathname==='/api/auth/login'&&req.method==='POST')return json(res,200,await sessions.login(await body(req,8192),res,accountKey));
       if(pathname==='/api/auth/logout'&&req.method==='POST'){await body(req,8192);return json(res,200,await sessions.logout(req,res));}
       let service,config,dataDir;
-      if(pathname.startsWith('/api/')||pathname.startsWith('/media/')){
-        const authorization=await sessions.require(req,res,pathname.startsWith('/media/'));
+      if(pathname.startsWith('/api/')||pathname.startsWith('/media/')||pathname.startsWith('/media-thumb/')){
+        const mediaRequest = pathname.startsWith('/media/') || pathname.startsWith('/media-thumb/');
+        const authorization=await sessions.require(req,res,mediaRequest);
         const key=accountKey(authorization.user.id);
-        if(pathname.startsWith('/media/')&&(url.searchParams.get('account')!==key||url.searchParams.getAll('account').length!==1))throw bad('媒体不属于当前账号，请重新打开作品',404);
+        if(mediaRequest&&(url.searchParams.get('account')!==key||url.searchParams.getAll('account').length!==1))throw bad('媒体不属于当前账号，请重新打开作品',404);
         if(!['GET','HEAD'].includes(req.method))await body(req,pathname.startsWith('/api/auth/')?8192:BODY_LIMIT);
         const workspace=await workspaces.get(authorization.user);
         authorization.assert();
@@ -128,6 +155,8 @@ export async function createHttpServer({auth,workspaces,distDir,downloadsDir=nul
       }
       if(pathname==='/api/demo'&&req.method==='POST')return json(res,200,await service.demo());
       if(pathname==='/api/projects'&&req.method==='POST')return json(res,200,await service.create(await body(req)));
+      const episodeAction=/^\/api\/projects\/([a-zA-Z0-9_-]+)\/episodes\/(episode-\d+|unassigned)\/generate-storyboards$/.exec(pathname);
+      if(episodeAction&&req.method==='POST')return json(res,200,await service.generateEpisodeStoryboards(episodeAction[1],episodeAction[2],await body(req)));
       const match=/^\/api\/projects\/([a-zA-Z0-9_-]+)(?:\/(.*))?$/.exec(pathname);
       if(match){
         const id=match[1],tail=match[2];let result;
@@ -142,13 +171,16 @@ export async function createHttpServer({auth,workspaces,distDir,downloadsDir=nul
         else if(tail==='analyze-append'&&req.method==='POST'){await body(req);result=await service.analyzeAppend(id);}
         else if(tail==='scenes'&&req.method==='POST')result=await service.createScene(id,await body(req));
         else if(tail==='looks'&&req.method==='POST')result=await service.createLook(id,await body(req));
+        else if(tail==='look-assets'&&req.method==='GET')result=await service.lookAssets(id,url.searchParams.get('characterId'));
+        else if(tail==='assets'&&req.method==='POST')result=await service.createAsset(id,await body(req));
         else {
-          const action=/^(characters|scenes|looks|shots|segments|jobs)\/([a-zA-Z0-9_-]+)(?:\/([a-z-]+))?$/.exec(tail||'');
+          const action=/^(characters|assets|scenes|looks|shots|segments|jobs)\/([a-zA-Z0-9_-]+)(?:\/([a-z-]+))?$/.exec(tail||'');
           if(action){
             const [,group,target,verb]=action;
             if(req.method==='PATCH'&&!verb){
               const payload=await body(req);
               if(group==='characters')result=await service.updateCharacter(id,target,payload);
+              if(group==='assets')result=await service.updateAsset(id,target,payload);
               if(group==='scenes')result=await service.updateScene(id,target,payload);
               if(group==='looks')result=await service.updateLook(id,target,payload);
               if(group==='shots')result=await service.updateShot(id,target,payload);
@@ -156,10 +188,14 @@ export async function createHttpServer({auth,workspaces,distDir,downloadsDir=nul
             }else if(req.method==='POST'&&verb){
               const payload=await body(req);
               if(group==='characters'&&['generate','approve','upload'].includes(verb))result=await service.characterAction(id,target,verb,payload);
+              if(group==='assets'&&['generate','approve','upload'].includes(verb))result=await service.assetAction(id,target,verb,payload);
+              if(group==='scenes'&&['generate','approve','upload'].includes(verb))result=await service.sceneAction(id,target,verb,payload);
               if(group==='looks'&&['generate','approve','upload'].includes(verb))result=await service.lookAction(id,target,verb,payload);
+              if(group==='looks'&&verb==='reuse')result=await service.reuseLook(id,target,payload);
               if(group==='shots'&&['generate','approve','upload','video'].includes(verb))result=await service.shotAction(id,target,verb,payload);
               if(group==='segments'&&['approve','generate-images','generate-videos','export'].includes(verb))result=await service.segmentAction(id,target,verb,payload);
               if(group==='segments'&&verb==='preview')result=await service.previewSegment(id,target,payload);
+              if(group==='jobs'&&verb==='pause')result=await service.pauseAnalysis(id,target);
               if(group==='jobs'&&verb==='resume')result=await service.resumeJob(id,target);
               if(group==='jobs'&&verb==='retry-analysis')result=await service.retryAnalysis(id,target,payload);
             }
@@ -169,6 +205,11 @@ export async function createHttpServer({auth,workspaces,distDir,downloadsDir=nul
       }
       if(['GET','HEAD'].includes(req.method)){
         if(pathname.startsWith('/media/'))return await sendFile(req,res,path.join(dataDir,'media'),pathname.slice(7),true);
+        if(pathname.startsWith('/media-thumb/')) {
+          const match = /^\/media-thumb\/([A-Za-z0-9_-]{1,100})\/(.+)$/.exec(pathname);
+          if (!match) throw bad('找不到文件', 404);
+          return await sendThumbnail(req, res, path.join(dataDir, 'media'), match[1], match[2]);
+        }
         if(pathname.startsWith('/downloads/')&&downloadsDir)return await sendFile(req,res,downloadsDir,pathname.slice('/downloads/'.length),false,true);
         if(pathname==='/admin') { res.writeHead(301,{Location:`${publicBasePath}/admin/`}); return res.end(); }
         if(pathname==='/admin/'||pathname==='/admin/index.html')return await sendFile(req,res,adminDir,'index.html');

@@ -1,6 +1,6 @@
 # 映序 Agent 接口
 
-映序提供 JSON CLI 和标准 MCP stdio 两个入口。二者使用同一份 26 个工具定义和执行逻辑，连接现有本地 HTTP 服务，覆盖人物身份、场景造型三视图、片段整板分镜、固定设定板模板和视频导出。所有模型密钥仍由映序应用保存；Agent 接口没有密钥配置工具，也不接收密钥参数。
+映序提供 JSON CLI 和标准 MCP stdio 两个入口。二者使用同一份 28 个工具定义和执行逻辑，连接现有本地 HTTP 服务，覆盖人物身份、场景造型三视图、片段整板分镜、固定设定板模板和视频导出。所有模型密钥仍由映序应用保存；Agent 接口没有密钥配置工具，也不接收密钥参数。
 
 ## 启动本地服务
 
@@ -40,7 +40,7 @@ node D:\A_Electron\AiMoveWorkFlow\scripts\agent-cli.mjs --url http://127.0.0.1:4
 node scripts/agent-cli.mjs [--url http://127.0.0.1:4318] call <tool_name> [--input args.json]
 ```
 
-参数可通过 UTF-8 JSON 文件或标准输入传入，不放在命令行字符串里拼接。输入上限 1 MiB；小说正文仍受应用 120000 字符限制。未提供 `--input` 时读取标准输入，空输入等价于 `{}`。
+参数可通过 UTF-8 JSON 文件或标准输入传入，不放在命令行字符串里拼接。输入上限 1 MiB；小说正文仍受应用 300000 字符限制。未提供 `--input` 时读取标准输入，空输入等价于 `{}`。
 
 创建作品示例：
 
@@ -116,7 +116,8 @@ MCP 成功调用同时返回 JSON 文本 `content` 和相同的 `structuredConte
 | `approve_segment_board` | `projectId, segmentId, reviewedVersion` | 确认已检查的整段分镜板及全部裁切画面；只接受当前整板版本 |
 | `generate_video` | `projectId, shotId` | 付费 MiniMax / 火山方舟视频；按所属片段模式保留整板或全部逐镜审核门禁，并在视频阶段上传人物参考图；可选 `regenerate:true` |
 | `get_jobs` | `projectId` | 可选 `jobId` 读取一个任务；只读 |
-| `resume_job` | `projectId, jobId` | 恢复原视频查询或图片成功回执下载，不重新生成 |
+| `pause_analysis` | `projectId, jobId` | 暂停当前文本分析并保存最近检查点；不重发模型请求 |
+| `resume_job` | `projectId, jobId` | 恢复原视频查询、图片成功回执或已暂停的文本分析；不重复已完成分析块 |
 | `generate_segment_images` | `projectId, segmentId` | `segment-board` 片段只提交一次完整整板生图，AI 决定 3–12 个镜头并由服务端裁切；旧 `legacy-shot` 作品才逐镜补缺 |
 | `generate_segment_videos` | `projectId, segmentId` | 审核后补缺视频；旧版视频须逐镜明确重做 |
 | `set_board_template` | `projectId, segmentId, templateId` | 保存模板偏好；不改镜头/审核/素材版本，导出进行中拒绝切换 |
@@ -130,7 +131,7 @@ MCP 成功调用同时返回 JSON 文本 `content` 和相同的 `structuredConte
 ## 一次制作流程
 
 1. `studio_status` 确认连接到正确实例，`create_project` 建立作品。
-2. `analyze_project` 提交一次；用 `get_jobs/get_project` 查询，直到任务完成。不要循环调用生成工具代替查询。
+2. `analyze_project` 提交一次；用 `get_jobs/get_project` 查询。长篇分析可以用 `pause_analysis` 暂停，再用 `resume_job` 继续；完成安全前沿后可先制作已发布片段，不要循环调用生成工具代替查询。
 3. 修订角色，调用 `generate_character`。读取完成后的角色 `reference`、`version` 和 `referenceVersion`，实际查看图片后才调用 `approve_character`，传所检查的 `reviewedVersion`。
 4. 旧 `legacy-shot` 作品检查 `scenes`、`looks` 和各镜 `sceneId`，按需生成并审核角色身份和场景三视图。新的 `segment-board` 作品不把角色图片上传到分镜生图；整板只依据镜头计划和文字造型事实生成面板，人物身份参考图在视频提交时再上传。
 5. 读取片段后调用 `generate_segment_images`。`segment-board` 只创建一个整板任务，等待 `storyboard` 完成后检查整板和每个竖屏裁切镜头；确认读取到的 `storyboardImageVersion` 后调用 `approve_segment_board`。`legacy-shot` 仍可对单镜调用 `generate_shot`，并在图片完成后逐镜 `approve_shot`。图片 API 成功不等于人工审核。

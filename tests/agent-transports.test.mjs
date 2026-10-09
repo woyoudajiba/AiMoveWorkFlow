@@ -32,7 +32,7 @@ test('JSON CLI lists shared tools and creates/reads a real local project through
   const listed=await cli(['--url',url,'list']);
   assert.equal(listed.code,0);assert.equal(listed.stderr,'');
   const discovery=JSON.parse(listed.stdout);assert.equal(discovery.ok,true);assert.ok(discovery.tools.some(tool=>tool.name==='storyboard_preview'));
-  assert.equal(discovery.tools.length,27);
+  assert.equal(discovery.tools.length,28);
   const templates=await cli(['--url',url,'call','list_board_templates'],'{}');assert.equal(templates.code,0);assert.equal(JSON.parse(templates.stdout).result.templates.length,3);
   const input={title:'CLI 原创故事',novel:'灯亮起时，林遥推开书店的门。',durationMode:'auto'};
   const created=await cli(['--url',url,'call','create_project'],JSON.stringify(input));
@@ -55,7 +55,7 @@ test('official MCP SDK performs stdio initialize, tools/list and tools/call agai
   t.after(async()=>{await client.close();});
   await client.connect(transport);
   assert.equal(client.getServerVersion().name,'aiframe-studio');
-  const discovery=await client.listTools();assert.equal(discovery.tools.length,27);
+  const discovery=await client.listTools();assert.equal(discovery.tools.length,28);
   assert.equal(discovery.tools.find(tool=>tool.name==='approve_shot').inputSchema.additionalProperties,false);
   const status=await client.callTool({name:'studio_status',arguments:{}});
   assert.equal(status.isError,undefined);assert.equal(status.structuredContent.ok,true);

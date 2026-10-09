@@ -84,24 +84,32 @@ const catalog = [
     id: 'xiongmao-seedance-2-0-special', label: 'Seedance 2.0 特价按次 · 高清 · 熊猫Ai', provider: '熊猫Ai',
     providerModel: 'seedance-2-0-special', quality: '高清', minDurationSeconds: 15, maxDurationSeconds: 15,
     resolutions: [
-      { id: '480p', label: '480P', pricePerSecondCny: null },
-      { id: '720p', label: '720P', pricePerSecondCny: null },
+      { id: '480p', label: '480P', pricePerSecondCny: null, pricePerCallCnyRange: priceRange(1.59, 7.69) },
+      { id: '720p', label: '720P', pricePerSecondCny: null, pricePerCallCnyRange: priceRange(2.44, 16.59) },
     ],
   },
   {
     id: 'xiongmao-seedance-2-0-special-fast', label: 'Seedance 2.0 特价按次 · Fast · 熊猫Ai', provider: '熊猫Ai',
     providerModel: 'seedance-2-0-special', quality: '快速', minDurationSeconds: 15, maxDurationSeconds: 15,
     resolutions: [
-      { id: '480p', label: '480P', pricePerSecondCny: null },
-      { id: '720p', label: '720P', pricePerSecondCny: null },
+      { id: '480p', label: '480P', pricePerSecondCny: null, pricePerCallCnyRange: priceRange(1.59, 7.69) },
+      { id: '720p', label: '720P', pricePerSecondCny: null, pricePerCallCnyRange: priceRange(2.44, 16.59) },
     ],
   },
   {
     id: 'xiongmao-seedance-2-0-special-mini', label: 'Seedance 2.0 特价按次 · Mini · 熊猫Ai', provider: '熊猫Ai',
     providerModel: 'seedance-2-0-special', quality: '标准', minDurationSeconds: 15, maxDurationSeconds: 15,
     resolutions: [
-      { id: '480p', label: '480P', pricePerSecondCny: null },
+      { id: '480p', label: '480P', pricePerSecondCny: null, pricePerCallCnyRange: priceRange(1.59, 7.69) },
+      { id: '720p', label: '720P', pricePerSecondCny: null, pricePerCallCnyRange: priceRange(2.44, 16.59) },
+    ],
+  },
+  {
+    id: 'xiongmao-seedance-2-5-special', label: 'Seedance 2.5 特价按次 · 熊猫Ai', provider: '熊猫Ai',
+    providerModel: 'seedance-2-5-special', minDurationSeconds: 30, maxDurationSeconds: 30,
+    resolutions: [
       { id: '720p', label: '720P', pricePerSecondCny: null },
+      { id: '1080p', label: '1080P', pricePerSecondCny: null },
     ],
   },
   {
@@ -127,16 +135,6 @@ const catalog = [
     maxDurationSeconds: 15,
     resolutions: [{ id: '720p', label: '720P', pricePerSecondCny: null }],
   },
-  {
-    id: 'doubao-seedance-1-0-pro-250528', label: 'Seedance 1.0 Pro', provider: '火山方舟',
-    maxDurationSeconds: 12,
-    resolutions: [{ id: '1080p', label: '1080P', pricePerSecondCny: null }],
-  },
-  {
-    id: 'doubao-seedance-1-0-pro-fast-250528', label: 'Seedance 1.0 Pro Fast', provider: '火山方舟',
-    maxDurationSeconds: 12,
-    resolutions: [{ id: '1080p', label: '1080P', pricePerSecondCny: null }],
-  },
 ];
 
 export const VIDEO_OPTIONS = Object.freeze(catalog.map(item => Object.freeze({
@@ -144,6 +142,7 @@ export const VIDEO_OPTIONS = Object.freeze(catalog.map(item => Object.freeze({
   resolutions: Object.freeze(item.resolutions.map(resolution => Object.freeze({
     ...resolution,
     ...(resolution.pricePerSecondCnyRange ? { pricePerSecondCnyRange: Object.freeze({ ...resolution.pricePerSecondCnyRange }) } : {}),
+    ...(resolution.pricePerCallCnyRange ? { pricePerCallCnyRange: Object.freeze({ ...resolution.pricePerCallCnyRange }) } : {}),
   }))),
 })));
 
@@ -160,6 +159,7 @@ export function listVideoOptions() {
     resolutions: item.resolutions.map(resolution => ({
       ...resolution,
       ...(resolution.pricePerSecondCnyRange ? { pricePerSecondCnyRange: { ...resolution.pricePerSecondCnyRange } } : {}),
+      ...(resolution.pricePerCallCnyRange ? { pricePerCallCnyRange: { ...resolution.pricePerCallCnyRange } } : {}),
     })),
   }));
 }
@@ -188,6 +188,7 @@ export function resolveVideoOption(model, resolution) {
     providerModel: selected.providerModel,
     pricePerSecondCny: selectedResolution.pricePerSecondCny,
     pricePerSecondCnyRange: selectedResolution.pricePerSecondCnyRange ? { ...selectedResolution.pricePerSecondCnyRange } : null,
+    pricePerCallCnyRange: selectedResolution.pricePerCallCnyRange ? { ...selectedResolution.pricePerCallCnyRange } : null,
     label: selected.label,
     provider: selected.provider,
   };
@@ -196,15 +197,17 @@ export function resolveVideoOption(model, resolution) {
 export function estimateVideoCostCny(model, resolution, durationSeconds) {
   const option = resolveVideoOption(model, resolution);
   const duration = Number(durationSeconds);
-  if (!Number.isFinite(duration) || duration <= 0 || option.pricePerSecondCny === null) return null;
+  if (!Number.isFinite(duration) || duration <= 0 || option.pricePerSecondCny === null || option.pricePerCallCnyRange) return null;
   return Math.round(option.pricePerSecondCny * duration * 100) / 100;
 }
 
 export function estimateVideoCostRangeCny(model, resolution, durationSeconds) {
   const option = resolveVideoOption(model, resolution);
   const duration = Number(durationSeconds);
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+  if (option.pricePerCallCnyRange) return { ...option.pricePerCallCnyRange };
   const range = option.pricePerSecondCnyRange;
-  if (!Number.isFinite(duration) || duration <= 0 || !range) return null;
+  if (!range) return null;
   return {
     min: Math.round(range.min * duration * 100) / 100,
     max: Math.round(range.max * duration * 100) / 100,

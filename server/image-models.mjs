@@ -20,7 +20,11 @@ export function buildImageRequest({model,prompt,images,aspectRatio,replyType='js
   if(!IMAGE_MODELS.some(item=>item.id===model))throw safeError('图片模型不在已接入列表中。','MODEL_UNSUPPORTED');
   if(!['9:16','16:9'].includes(aspectRatio))throw safeError('图片画幅必须为 9:16 或 16:9。','INVALID_INPUT');
   if(!['json','async'].includes(replyType))throw safeError('图片服务回复模式无效。','INVALID_INPUT');
-  const body={model,prompt,images,aspectRatio,replyType};
+  // `images` is optional in the Grsai contract. Omitting it for a text-only
+  // request avoids routing an empty array through providers that interpret
+  // the presence of the field as an image-edit request.
+  const body={model,prompt,aspectRatio,replyType};
+  if(Array.isArray(images)&&images.length)body.images=images;
   if(model.startsWith('nano-banana'))body.imageSize='1K';
   if(model==='gpt-image-2-vip')body.aspectRatio=aspectRatio==='16:9'?'1280x720':'720x1280';
   return body;

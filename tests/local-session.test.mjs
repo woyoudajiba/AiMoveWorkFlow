@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createLocalSession} from '../server/local-session.mjs';
+import {createTdlAuthFactory} from '../server/tdl-auth.mjs';
 
 const response=()=>({headers:{},setHeader(key,value){this.headers[key]=value;}});
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
@@ -57,4 +58,24 @@ test('media requests accept the client session header without a browser cookie',
   assert.equal(authorization.user.id,user.id);
   await local.logout({headers:{'x-studio-session':session.sessionId}},response());
   await assert.rejects(local.require({headers:{'x-studio-session':session.sessionId}},response(),true),error => error.status === 401);
+});
+
+test('a persisted scoped session can be restored after the local session registry is recreated',async()=>{
+  const NOW=Date.parse('2026-10-02T01:00:00.000Z');
+  const user={id:'account-alice',username:'alice',displayName:'Alice',role:'MEMBER',membershipTier:'NORMAL'};
+  const stored=new Map();
+  const factory=createTdlAuthFactory({now:()=>NOW,persistLogin:true,load:async id=>stored.get(id)||null,save:async(id,value)=>{if(value===null)stored.delete(id);else stored.set(id,value);},request:async(url,options)=>{
+    if(url.endsWith('/login'))return {token:'alice-token',expiresAt:new Date(NOW+3600000).toISOString(),user};
+    if(url.endsWith('/logout'))return {ok:true};
+    assert.equal(options.headers.Authorization,'Bearer alice-token');
+    return {user};
+  }});
+  const first=createLocalSession(undefined,{factory});
+  const login=await first.login({username:'alice',password:'fixture'},response(),x=>x);
+  assert.equal(stored.size,1);
+  const restored=createLocalSession(undefined,{factory});
+  const status=await restored.status({headers:{'x-studio-session':login.sessionId}},response(),x=>x);
+  assert.equal(status.user.id,user.id);
+  assert.equal(status.sessionId,login.sessionId);
+  assert.equal(status.remembered,true);
 });

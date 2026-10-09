@@ -7,9 +7,10 @@
 - 可选记住登录，仅保存 Windows safeStorage 加密的会话令牌，绝不保存密码。无加密能力时仅当前会话可用。
 
 ## 会话与安全
-- 云端令牌仅驻留服务端；前端使用内存中的随机本机会话 ID，媒体通过 HttpOnly / SameSite=Strict cookie 验证，URL 同时携带非秘密的 accountKey，阻止旧页签跟随共享 Cookie 读取新账号媒体。
+- 云端令牌仅驻留服务端；每个浏览器/客户端本机会话都有独立的随机会话 ID 和独立的上游 TDL 适配器，不能用进程级单例令牌承载多个账号。前端把会话 ID保存在当前标签页的 `sessionStorage`，媒体 URL同时携带 accountKey 和会话 ID，服务端再用 HttpOnly / SameSite=Strict cookie 作为兼容回退，避免共享 Cookie把不同账号的媒体带错。
+- 服务端记住登录按本机会话 ID分桶持久化，不能再把多个账号写入同一个 token 对象；服务重启后只有携带原标签页会话 ID的客户端可以恢复对应账号。
 - 所有 API 必须通过本机 Host、Origin 和 X-Local-Client 校验。受保护 API 额外校验 X-Studio-Session，旧页签/Agent 不可跟随账号切换执行请求。
-- `/api/auth/status` 返回公开用户及本机会话；`POST /api/auth/login` 接受 username/password/remember；`POST /api/auth/logout` 撤销本机并尽力撤销云端会话。
+- `/api/auth/status` 返回公开用户及本机会话；`POST /api/auth/login` 接受 username/password/remember；`POST /api/auth/logout` 只撤销当前本机会话，并在同账号仍有其他本机会话时不撤销它们的上游会话。
 - 登录限速、请求体至多 8 KiB、固定错误文案。会话验证最多缓存 30 秒；过期/停用立即拒绝，离线验证失败拒绝业务操作，保留加密缓存供重验。
 - Agent 首次调用绑定本次已登录会话；退出或换账号后需重新启动 Agent，不自动重试写请求、不接收云端密码或令牌。
 

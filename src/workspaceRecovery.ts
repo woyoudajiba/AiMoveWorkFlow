@@ -4,7 +4,7 @@ import type { View } from './types';
 export const workspaceRecoveryKey = 'aiframe-workspace-v1';
 const workspaceRecoveryVersion = 1;
 const workspaceRecoveryTtlMs = 30 * 24 * 60 * 60 * 1000;
-const views = new Set<View>(['story', 'characters', 'looks', 'storyboard', 'videos']);
+const views = new Set<View>(['story', 'characters', 'assets', 'looks', 'storyboard', 'videos']);
 
 export type WorkspaceRecovery = {
   projectId: string;

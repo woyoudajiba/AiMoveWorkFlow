@@ -4,21 +4,24 @@ import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createHttpServer} from '../server/http.mjs';
-import {createTdlAuth} from '../server/tdl-auth.mjs';
+import {createTdlAuth,createTdlAuthFactory} from '../server/tdl-auth.mjs';
 import {createLocalClient} from '../agent/client.mjs';
 
-async function fixture(t){
+async function fixture(t,{scoped=false}={}){
   const dir=await mkdtemp(path.join(tmpdir(),'aiframe-auth-http-'));
   const distDir=path.join(dir,'dist');await mkdir(distDir);await writeFile(path.join(distDir,'index.html'),'<html>login</html>');
   let clock=Date.now(),mode='ok',loaded=0;const accounts=new Map();
   const user=name=>({id:`account-${name}`,username:name,displayName:name,role:'MEMBER',membershipTier:'NORMAL'});
-  const auth=await createTdlAuth({now:()=>clock,request:async(url,options)=>{
+  const request=async(url,options)=>{
     if(mode==='offline')throw new Error('upstream private detail');
     if(url.endsWith('/login')){if(options.body.password!=='fixture-password')throw Object.assign(new Error('invalid private detail'),{status:401});return {token:options.body.username,expiresAt:new Date(clock+3600000).toISOString(),user:user(options.body.username)};}
     if(url.endsWith('/logout'))return {ok:true};
     if(mode==='disabled')throw Object.assign(new Error('disabled private detail'),{status:403});
     return {user:user(options.headers.Authorization.slice(7))};
-  }});
+  };
+  const auth=await createTdlAuth({now:()=>clock,request});
+  const persisted=new Map();
+  const authFactory=scoped?createTdlAuthFactory({now:()=>clock,request,persistLogin:true,load:async id=>persisted.get(id)||null,save:async(id,value)=>{if(value===null)persisted.delete(id);else persisted.set(id,value);}}):null;
   const workspaces={get:async(u)=>{
     if(!accounts.has(u.id)){
       loaded++;const accountDir=path.join(dir,u.id);await mkdir(path.join(accountDir,'media'),{recursive:true});await writeFile(path.join(accountDir,'media','same.png'),u.username);
@@ -26,13 +29,43 @@ async function fixture(t){
       accounts.set(u.id,{dataDir:accountDir,service:{list:async()=>projects,create:async(input)=>{const p={id:u.id,title:input.title};projects.push(p);return p;}},config:{public:()=>({llmModel:model}),update:async(input)=>{model=input.llmModel;return {llmModel:model};}}});
     }return accounts.get(u.id);
   }};
-  const server=await createHttpServer({auth,workspaces,distDir});
+  const server=await createHttpServer({auth:scoped?undefined:auth,authFactory:scoped?authFactory:undefined,workspaces,distDir});
   t.after(async()=>{await server.close();await rm(dir,{recursive:true,force:true});});
   const headers={'X-Local-Client':'aiframe','content-type':'application/json'};
   const call=(route,method='GET',body,session)=>fetch(server.url+route,{method,headers:{...headers,...(session?{'X-Studio-Session':session}: {})},...(body===undefined?{}:{body:JSON.stringify(body)})});
   const login=async(name='alice')=>{const r=await call('/api/auth/login','POST',{username:name,password:'fixture-password'});assert.equal(r.status,200);return {...await r.json(),cookie:r.headers.get('set-cookie').split(';')[0]};};
   return {...server,call,login,loaded:()=>loaded,setMode:value=>{mode=value;clock+=31000;},advance:ms=>clock+=ms};
 }
+
+test('different TDL accounts keep independent upstream tokens and local sessions',async t=>{
+  const f=await fixture(t,{scoped:true});
+  const alice=await f.login('alice');
+  const bob=await f.login('bob');
+  assert.notEqual(alice.sessionId,bob.sessionId);
+  assert.equal((await f.call('/api/state','GET',undefined,alice.sessionId)).status,200);
+  assert.equal((await f.call('/api/state','GET',undefined,bob.sessionId)).status,200);
+  const media=await fetch(`${f.url}/media/same.png?account=${alice.accountKey}&session=${alice.sessionId}`,{headers:{Cookie:bob.cookie}});
+  assert.equal(await media.text(),'alice','a shared browser Cookie cannot redirect a media URL bound to the Alice session');
+  const aliceState=await (await f.call('/api/state','GET',undefined,alice.sessionId)).json();
+  const bobState=await (await f.call('/api/state','GET',undefined,bob.sessionId)).json();
+  assert.deepEqual(aliceState.projects,[]);
+  assert.deepEqual(bobState.projects,[]);
+  assert.equal((await f.call('/api/projects','POST',{title:'Alice only'},alice.sessionId)).status,200);
+  assert.deepEqual((await (await f.call('/api/state','GET',undefined,bob.sessionId)).json()).projects,[]);
+  assert.equal((await f.call('/api/auth/logout','POST',{},alice.sessionId)).status,200);
+  assert.equal((await f.call('/api/state','GET',undefined,alice.sessionId)).status,401);
+  assert.equal((await f.call('/api/state','GET',undefined,bob.sessionId)).status,200);
+});
+
+test('one local window can leave another window on the same account active',async t=>{
+  const f=await fixture(t,{scoped:true});
+  const first=await f.login('alice');
+  const second=await f.login('alice');
+  assert.notEqual(first.sessionId,second.sessionId);
+  assert.equal((await f.call('/api/auth/logout','POST',{},first.sessionId)).status,200);
+  assert.equal((await f.call('/api/state','GET',undefined,first.sessionId)).status,401);
+  assert.equal((await f.call('/api/state','GET',undefined,second.sessionId)).status,200);
+});
 
 test('login page is public but every data, model, media and Agent route is protected',async t=>{
   const f=await fixture(t);assert.equal((await fetch(f.url)).status,200);

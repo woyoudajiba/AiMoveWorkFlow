@@ -16,6 +16,6 @@ test('Agent scene looks carry version guards, reuse assets, block stale approval
   await agent.execute('create_scene',{projectId:'p',name:'办公室',description:'次日白天'});assert.equal(writes[3].path,'/api/projects/p/scenes');
   await agent.execute('create_look',{projectId:'p',sceneId:'s',characterId:'c',name:'衬衫',appearance:'白衬衫'});assert.equal(writes[4].path,'/api/projects/p/looks');
   project.looks[0].referenceVersion=3;await assert.rejects(agent.execute('generate_look',{projectId:'p',lookId:'l'}),e=>e.code==='STALE_ASSET');
-  assert.equal(listAgentTools().length,27);
+  assert.equal(listAgentTools().length,28);
   await assert.rejects(agent.execute('update_look',{projectId:'p',lookId:'l',patch:{approved:true}}),e=>e.code==='INVALID_INPUT');
 });

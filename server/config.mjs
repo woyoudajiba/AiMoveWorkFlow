@@ -10,8 +10,8 @@ const MODELS = {
     'xiongmao-seedance-2-0-official','xiongmao-seedance-2-0-official-fast','xiongmao-seedance-2-0-official-mini',
     'xiongmao-seedance-2-0-promo','xiongmao-seedance-2-0-promo-fast','xiongmao-seedance-2-0-promo-mini',
     'xiongmao-seedance-2-0-special','xiongmao-seedance-2-0-special-fast','xiongmao-seedance-2-0-special-mini',
-    'doubao-seedance-2-5','doubao-seedance-2-0-pro','doubao-seedance-2-0-fast','doubao-seedance-2-0-mini',
-    'doubao-seedance-1-0-pro-250528','doubao-seedance-1-0-pro-fast-250528'],
+    'xiongmao-seedance-2-5-special',
+    'doubao-seedance-2-5','doubao-seedance-2-0-pro','doubao-seedance-2-0-fast','doubao-seedance-2-0-mini'],
 };
 const DEFAULT_VIDEO_MODEL='MiniMax-H3';
 const LEGACY_VIDEO_MODELS=new Set(['seedance-2','seedance-2-fast']);

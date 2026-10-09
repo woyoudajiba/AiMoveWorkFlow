@@ -16,6 +16,6 @@ export function authenticatedFetch(input,options={}){
   if(!known)return globalThis.fetch(input,options);
   const headers=new Headers(options.headers);headers.set('X-Studio-Session',known.session);headers.set('Cookie',known.cookie);
   if(!options.method||['GET','HEAD'].includes(options.method))headers.set('X-Local-Client','aiframe');
-  if(url.pathname.startsWith('/media/')&&!url.searchParams.has('account'))url.searchParams.set('account',known.accountKey);
+  if((url.pathname.startsWith('/media/')||url.pathname.startsWith('/media-thumb/'))&&!url.searchParams.has('account'))url.searchParams.set('account',known.accountKey);
   return globalThis.fetch(url,{...options,headers});
 }

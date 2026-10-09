@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createTdlAuth} from '../server/tdl-auth.mjs';
+import {createTdlAuth,createTdlAuthFactory} from '../server/tdl-auth.mjs';
 
 const BASE='https://wsfile.cn/myladmin';
 const NOW=Date.parse('2026-10-02T01:00:00.000Z');
@@ -215,4 +215,23 @@ test('malformed login or mismatched current-user responses never unlock the acco
   }
   const auth=await createTdlAuth({now:()=>NOW,load:async()=>session(),save:async()=>{},request:async()=>({user:{...USER,id:'different-account'}})});
   await assert.rejects(auth.validate(),rejectCode('AUTH_INVALID',401));assert.equal(auth.public().authenticated,false);
+});
+
+test('session factory keeps upstream tokens independent for different accounts',async()=>{
+  const requests=[];const factory=createTdlAuthFactory({now:()=>NOW,request:async(url,options)=>{
+    requests.push({url,options});
+    if(url.endsWith('/login'))return session({token:options.body.username,user:{...USER,id:`${options.body.username}-id`,username:options.body.username}});
+    if(url.endsWith('/logout'))return {ok:true};
+    const token=options.headers.Authorization.slice(7);
+    return {user:{...USER,id:`${token}-id`,username:token}};
+  }});
+  const alice=await factory.create('a'.repeat(64));
+  const bob=await factory.create('b'.repeat(64));
+  await alice.login({username:'alice',password:'fixture'});
+  await bob.login({username:'bob',password:'fixture'});
+  assert.equal((await alice.validate({force:true})).id,'alice-id');
+  assert.equal((await bob.validate({force:true})).id,'bob-id');
+  await alice.logout();
+  assert.equal((await bob.validate({force:true})).id,'bob-id');
+  assert.deepEqual(requests.filter(item=>item.url.endsWith('/me')).map(item=>item.options.headers.Authorization),['Bearer alice','Bearer bob','Bearer bob']);
 });

@@ -1,4 +1,4 @@
-const {app,BrowserWindow,safeStorage,dialog,ipcMain}=require('electron');
+const {app,BrowserWindow,safeStorage,dialog,ipcMain,Notification}=require('electron');
 const path=require('node:path');
 const fs=require('node:fs/promises');
 const {pathToFileURL}=require('node:url');
@@ -37,9 +37,12 @@ else {
       const saveEncrypted=async(file,value)=>{await fs.mkdir(path.dirname(file),{recursive:true});const temp=file+'.tmp';await fs.writeFile(temp,safeStorage.encryptString(JSON.stringify(value)));await fs.rename(temp,file);};
       const loadCredentials=secure?async(key)=>{try{return JSON.parse(safeStorage.decryptString(await fs.readFile(accountFile(key))));}catch(e){if(e.code==='ENOENT')return {};throw new Error('无法读取本机加密凭据，请恢复凭据文件后重试。');}}:undefined;
       const saveCredentials=secure?async(key,settings)=>saveEncrypted(accountFile(key),settings):undefined;
-      const authFile=path.join(dataDir,'auth-session.enc');
-      const loadAuth=secure?async()=>{try{return JSON.parse(safeStorage.decryptString(await fs.readFile(authFile)));}catch{return null;}}:undefined;
-      const saveAuth=secure?async(session)=>{if(session===null){await fs.rm(authFile,{force:true});return;}await saveEncrypted(authFile,session);}:undefined;
+      const authFile=path.join(dataDir,'auth-sessions.enc');
+      const readAuthSessions=async()=>{try{const value=JSON.parse(safeStorage.decryptString(await fs.readFile(authFile)));return value?.version===2&&value.sessions&&typeof value.sessions==='object'&&!Array.isArray(value.sessions)?value.sessions:{};}catch(error){if(error.code==='ENOENT')return {};return {};}};
+      let authWrite=Promise.resolve();
+      const updateAuthSessions=operation=>{const result=authWrite.then(async()=>{const sessions=await readAuthSessions();await operation(sessions);if(Object.keys(sessions).length)await saveEncrypted(authFile,{version:2,sessions});else await fs.rm(authFile,{force:true});});authWrite=result.catch(()=>{});return result;};
+      const loadAuth=secure?async(sessionId)=>{if(!/^[a-f0-9]{64}$/.test(sessionId))throw new Error('Invalid local session ID.');return (await readAuthSessions())[sessionId]||null;}:undefined;
+      const saveAuth=secure?async(sessionId,session)=>{if(!/^[a-f0-9]{64}$/.test(sessionId))throw new Error('Invalid local session ID.');return updateAuthSessions(sessions=>{if(session===null)delete sessions[sessionId];else sessions[sessionId]=session;});}:undefined;
       const {startApp}=await import(pathToFileURL(path.join(__dirname,'../server/index.mjs')).href);
       backend=await startApp({dataDir,outputRoot:outputDir,loadCredentials,saveCredentials,loadAuth,saveAuth});
     }
@@ -56,6 +59,13 @@ else {
       const result=await updater.installUpdate(pendingUpdate);
       setTimeout(()=>app.quit(),1000);
       return result;
+    });
+    ipcMain.handle('notification:show',async(_event,payload)=>{
+      const title=typeof payload?.title==='string'&&payload.title.trim()?payload.title.trim():'映序任务通知';
+      const body=typeof payload?.body==='string'&&payload.body.trim()?payload.body.trim():'任务状态已更新。';
+      const tag=typeof payload?.tag==='string'&&payload.tag.trim()?payload.tag.trim():'aiframe-task';
+      new Notification({title,body,silent:true}).show();
+      return Boolean(tag);
     });
     const titleBarOverlay=process.platform==='win32'?{color:'#171b18',symbolColor:'#bcedce',height:36}:null;
     const win=new BrowserWindow({width:1520,height:980,minWidth:960,minHeight:680,show:!smokeDirectory,backgroundColor:'#171b18',title:'映序 · 小说短剧工作台',autoHideMenuBar:true,titleBarStyle:process.platform==='win32'?'hidden':'default',titleBarOverlay:titleBarOverlay||false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true}});

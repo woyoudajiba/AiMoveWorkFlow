@@ -34,6 +34,7 @@ interface Window {
     displayVersion: string;
     checkForUpdate: () => Promise<DesktopUpdateInfo>;
     installUpdate: () => Promise<DesktopUpdateResult>;
+    showNotification: (payload: { title: string; body: string; tag: string }) => Promise<boolean>;
     getProjectFolder: (accountKey: string, projectId: string) => Promise<DesktopProjectFolder | null>;
     chooseProjectFolder: (accountKey: string, projectId: string, projectTitle: string) => Promise<DesktopProjectFolder | null>;
     syncProjectAssets: (payload: { accountKey: string; projectId: string; sessionId: string; snapshot: unknown; assets: Array<{ url: string; relativePath: string; kind: 'image' | 'video' | 'metadata' }> }) => Promise<DesktopProjectSyncResult>;

@@ -64,6 +64,59 @@ test('uncertain analysis needs explicit cost confirmation, retains its record an
   assert.ok(live.characters.length);assert.equal(live.novel,p.novel);
 });
 
+test('projects persist independent analysis models, snapshot the job model, and analyze different projects concurrently', async t => {
+  let executing = 0;
+  let maxExecuting = 0;
+  const seenModels = [];
+  const { service } = await fixture(t, {
+    analyze: async (project, _businessId, options = {}) => {
+      executing += 1;
+      maxExecuting = Math.max(maxExecuting, executing);
+      seenModels.push(options.analysisModel);
+      await delay(20);
+      executing -= 1;
+      return structuredClone(SAMPLE_ANALYSIS);
+    },
+  });
+  const deepseek = await service.create({ title: 'DeepSeek 项目', novel: '第一份正文。', llmModel: 'deepseek-v4-pro' });
+  const qwen = await service.create({ title: 'Qwen 项目', novel: '第二份正文。' });
+  const configuredQwen = await service.update(qwen.id, { llmModel: 'qwen3.7-plus' });
+  assert.equal((await service.get(deepseek.id)).llmModel, 'deepseek-v4-pro');
+  assert.equal(configuredQwen.llmModel, 'qwen3.7-plus');
+  await service.analyze(deepseek.id);
+  await service.analyze(qwen.id);
+  const completed = await waitFor(service, qwen.id, item => item.jobs.at(-1)?.status === 'completed');
+  await waitFor(service, deepseek.id, item => item.jobs.at(-1)?.status === 'completed');
+  assert.ok(maxExecuting >= 2, `expected different projects to overlap, got ${maxExecuting}`);
+  assert.deepEqual(seenModels.sort(), ['deepseek-v4-pro', 'qwen3.7-plus']);
+  await assert.rejects(service.update(deepseek.id, { llmModel: 'qwen3.7-plus' }), error => error.code === 'STRUCTURE_LOCKED');
+  assert.equal(completed.llmModel, 'qwen3.7-plus');
+});
+
+test('projects using the same analysis model still run concurrently', async t => {
+  let executing = 0;
+  let maxExecuting = 0;
+  const seenModels = [];
+  const { service } = await fixture(t, {
+    analyze: async (_project, _businessId, options = {}) => {
+      executing += 1;
+      maxExecuting = Math.max(maxExecuting, executing);
+      seenModels.push(options.analysisModel);
+      await delay(20);
+      executing -= 1;
+      return structuredClone(SAMPLE_ANALYSIS);
+    },
+  });
+  const first = await service.create({ title: 'Qwen 项目一', novel: '第一份正文。', llmModel: 'qwen3.7-plus' });
+  const second = await service.create({ title: 'Qwen 项目二', novel: '第二份正文。', llmModel: 'qwen3.7-plus' });
+  await service.analyze(first.id);
+  await service.analyze(second.id);
+  await waitFor(service, first.id, item => item.jobs.at(-1)?.status === 'completed');
+  await waitFor(service, second.id, item => item.jobs.at(-1)?.status === 'completed');
+  assert.ok(maxExecuting >= 2, `expected same-model projects to overlap, got ${maxExecuting}`);
+  assert.deepEqual(seenModels, ['qwen3.7-plus', 'qwen3.7-plus']);
+});
+
 test('analyzed projects accept strict suffixes and append only new analysis while preserving old records', async t => {
   const calls = [];
   const { service } = await fixture(t, {
@@ -175,6 +228,48 @@ test('a new unknown continuation needs new confirmation and service restart neve
   }finally{await reopened.close();}
 });
 
+test('a restarted analysis with a published checkpoint can be explicitly continued', async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  let retryOptions;
+  const { service, dir, providers } = await fixture(t, {
+    analyze: async (_project, _businessId, options = {}) => {
+      calls += 1;
+      if (calls === 1) {
+        const partial = structuredClone(SAMPLE_ANALYSIS);
+        partial.segments[0].analysisChunk = 0;
+        await options.onProgress({ completedChunks: 4, totalChunks: 56, phase: 'analyzing', model: 'qwen3.7-plus', readyThroughChunk: 4, readySegmentCount: 1, partialAnalysis: partial });
+        await gate;
+        return structuredClone(SAMPLE_ANALYSIS);
+      }
+      retryOptions = options;
+      return structuredClone(SAMPLE_ANALYSIS);
+    },
+  });
+  const project = await service.create({ title: '重启后继续分析', novel: '一段足够长的原稿。', duration: 30 });
+  await service.analyze(project.id);
+  const running = await waitFor(service, project.id, item => item.jobs[0]?.status === 'running' && item.analysisReady?.complete === false);
+  const originalJobId = running.jobs[0].id;
+  await service.close();
+  release();
+  const savedPath = path.join(dir, `${project.id}.json`);
+  const savedProject = JSON.parse(await readFile(savedPath, 'utf8'));
+  delete savedProject.analysisReady;
+  await writeFile(savedPath, JSON.stringify(savedProject));
+
+  const reopened = await createService({ dataDir: dir, providers, pollIntervalMs: 1 });
+  t.after(async () => { await reopened.close(); });
+  const recovered = await waitFor(reopened, project.id, item => item.jobs[0]?.status === 'unknown');
+  assert.equal(recovered.segments.length, 1);
+  await reopened.retryAnalysis(project.id, originalJobId, { confirmDuplicateCost: true });
+  const completed = await waitFor(reopened, project.id, item => item.jobs.at(-1)?.status === 'completed');
+  assert.equal(calls, 2);
+  assert.equal(retryOptions.retryUncertain, true);
+  assert.equal(completed.jobs[0].status, 'unknown');
+  assert.equal(completed.jobs[0].analysisRetryJobId, completed.jobs[1].id);
+});
+
 test('an actively running analysis cannot be continued as an unknown request',async t=>{
   let release;const gate=new Promise(resolve=>{release=resolve;});
   const {service}=await fixture(t,{analyze:async()=>{await gate;throw Object.assign(new Error('超时'),{code:'NETWORK_TIMEOUT'});}});
@@ -196,7 +291,28 @@ test('failed analysis keeps the safe chunk error visible for recovery', async t 
   assert.equal(failed.jobs[0].error, '第 5/11 块分析未通过校验，原稿已保留。');
 });
 
-test('failed analysis exposes a current-block retry that reuses the durable checkpoint', async t => {
+test('legacy episode budget failure can resume without discarding the project', async t => {
+  let calls = 0;
+  const { service } = await fixture(t, {
+    analyze: async () => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('第 55 集规划了 240 秒，不能超过约 200 秒；请拆成更短片段。'), { code: 'ANALYSIS_INVALID' });
+      return { ...structuredClone(SAMPLE_ANALYSIS), analysisWarnings: [{ episodeNumber: 55, totalDuration: 240, maximumDuration: 200, message: '第 55 集规划了 240 秒，超过约 200 秒的建议上限；已保留完整内容。' }] };
+    },
+  });
+  const project = await service.create({ title: '旧时长失败', novel: '完整剧本正文。', duration: 30 });
+  await service.analyze(project.id);
+  const failed = await waitFor(service, project.id, item => item.jobs[0]?.status === 'failed');
+  assert.equal(failed.jobs[0].analysisRetryable, true);
+  await service.retryAnalysis(project.id, failed.jobs[0].id, { confirmDuplicateCost: true });
+  const completed = await waitFor(service, project.id, item => item.jobs.at(-1)?.status === 'completed');
+  assert.equal(calls, 2);
+  assert.equal(completed.jobs.length, 2);
+  assert.equal(completed.segments.length, SAMPLE_ANALYSIS.segments.length);
+  assert.equal(completed.analysisWarnings?.[0]?.totalDuration, 240);
+});
+
+test('deterministic analysis validation failure retries the current block automatically', async t => {
   let calls = 0;
   const attempts = [];
   const { service } = await fixture(t, {
@@ -209,16 +325,32 @@ test('failed analysis exposes a current-block retry that reuses the durable chec
   });
   const project = await service.create({ title: '当前块重试', novel: '一段正文。' });
   await service.analyze(project.id);
+  const completed = await waitFor(service, project.id, item => item.jobs[0]?.status === 'completed');
+  assert.equal(calls, 2);
+  assert.equal(attempts[1].retryDeterministic, true);
+  assert.ok(completed.segments.length);
+});
+
+test('initial analysis can retry a failed block after publishing a partial checkpoint', async t => {
+  let calls = 0;
+  const { service } = await fixture(t, {
+    analyze: async (_project, _businessId, options) => {
+      calls += 1;
+      const partial = structuredClone(SAMPLE_ANALYSIS);
+      partial.segments = partial.segments.slice(0, 1);
+      await options.onProgress({ completedChunks: 1, totalChunks: 3, phase: 'analyzing', model: 'qwen3.7-plus', readyThroughChunk: 1, readySegmentCount: 1, partialAnalysis: partial });
+      if (calls <= 4) throw Object.assign(new Error('第 2 块分析未通过校验，原稿已保留。'), { code: 'ANALYSIS_INVALID', definitive: true, analysisRetryable: true, analysisChunk: 1, safe: true });
+      return structuredClone(SAMPLE_ANALYSIS);
+    },
+  });
+  const project = await service.create({ title: '初次部分恢复', novel: '一段正文。' });
+  await service.analyze(project.id);
   const failed = await waitFor(service, project.id, item => item.jobs[0]?.status === 'failed');
-  assert.equal(failed.jobs[0].analysisRetryable, true);
-  assert.equal(failed.jobs[0].analysisChunk, 4);
-  await assert.rejects(service.analyze(project.id), error => error.code === 'ANALYSIS_RETRY_REQUIRED');
+  assert.ok(failed.segments.length, 'the safe checkpoint should remain available');
   await service.retryAnalysis(project.id, failed.jobs[0].id, { confirmDuplicateCost: true });
   const completed = await waitFor(service, project.id, item => item.jobs.at(-1)?.status === 'completed');
-  assert.equal(calls, 2);
-  assert.equal(attempts[1].retryUncertain, true);
-  assert.equal(completed.jobs[0].analysisRetryJobId, completed.jobs[1].id);
-  assert.ok(completed.segments.length);
+  assert.equal(calls, 5);
+  assert.equal(completed.segments.length, SAMPLE_ANALYSIS.segments.length);
 });
 
 test('failed append analysis can retry only its new block without discarding prior episodes', async t => {
@@ -236,13 +368,56 @@ test('failed append analysis can retry only its new block without discarding pri
   const analyzed = await waitFor(service, project.id, item => item.jobs.at(-1)?.status === 'completed');
   await service.update(project.id, { novel: `${analyzed.novel}\n第二集新增原稿` });
   await service.analyzeAppend(project.id);
-  const failed = await waitFor(service, project.id, item => item.jobs.at(-1)?.status === 'failed');
-  assert.equal(failed.segments.length, analyzed.segments.length);
-  await service.retryAnalysis(project.id, failed.jobs.at(-1).id, { confirmDuplicateCost: true });
   const completed = await waitFor(service, project.id, item => item.jobs.at(-1)?.status === 'completed' && item.segments.length > analyzed.segments.length);
   assert.equal(calls, 3);
   assert.equal(completed.segments.length, analyzed.segments.length + 1);
   assert.equal(completed.segments[0].id, analyzed.segments[0].id);
+});
+
+test('analysis publishes only the safe front while later chunks are still running', async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const { service } = await fixture(t, {
+    analyze: async (_project, _businessId, options) => {
+      const partial = structuredClone(SAMPLE_ANALYSIS);
+      partial.segments[0].analysisChunk = 0;
+      await options.onProgress({ completedChunks: 4, totalChunks: 8, phase: 'analyzing', model: 'qwen3.7-plus', readyThroughChunk: 1, readySegmentCount: 1, partialAnalysis: partial });
+      await gate;
+      return structuredClone(SAMPLE_ANALYSIS);
+    },
+  });
+  const project = await service.create({ title: '安全前沿', novel: '一段正文。' });
+  await service.analyze(project.id);
+  const partial = await waitFor(service, project.id, item => item.analysisReady?.complete === false && item.segments.length === 1);
+  assert.equal(partial.analysisReady.readyThroughChunk, 1);
+  assert.equal(partial.analysisReady.readySegmentCount, 1);
+  release();
+  const completed = await waitFor(service, project.id, item => item.jobs[0]?.status === 'completed');
+  assert.equal(completed.analysisReady.complete, true);
+});
+
+test('analysis can pause and resume from the same job without creating a second task', async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  const { service } = await fixture(t, {
+    analyze: async (_project, _businessId) => {
+      calls++;
+      if (calls === 1) await gate;
+      return structuredClone(SAMPLE_ANALYSIS);
+    },
+  });
+  const project = await service.create({ title: '暂停恢复', novel: '一段正文。' });
+  await service.analyze(project.id);
+  const running = await waitFor(service, project.id, item => item.jobs[0]?.status === 'running');
+  await service.pauseAnalysis(project.id, running.jobs[0].id);
+  release();
+  const paused = await waitFor(service, project.id, item => item.jobs[0]?.status === 'paused');
+  assert.match(paused.jobs[0].error, /暂停/);
+  await service.resumeJob(project.id, paused.jobs[0].id);
+  const completed = await waitFor(service, project.id, item => item.jobs[0]?.status === 'completed');
+  assert.equal(calls, 2);
+  assert.equal(completed.jobs.length, 1);
 });
 
 test('demo remains text only and state survives reopening; structural edits are guarded', async t => {
@@ -421,6 +596,30 @@ test('reset duration rejects queued analysis tasks before changing the plan', as
   assert.equal(unchanged.jobs.length, 1);
 });
 
+test('a segment-board scene can be explicitly promoted to thirty seconds for the 2.5 model', async t => {
+  const { service } = await fixture(t, {
+    analyze: async () => {
+      const result = structuredClone(SAMPLE_ANALYSIS);
+      result.segments[0].duration = 15;
+      result.segments[0].shots = result.segments[0].shots.map(shot => ({ ...shot, duration: shot.duration / 2 }));
+      return result;
+    },
+  });
+  const project = await service.create({ title: '连续场景扩展', novel: '一段足够长的连续剧情。', generationMode: 'segment-board', duration: 15, durationMode: 'auto' });
+  await service.analyze(project.id);
+  const analyzed = await waitFor(service, project.id, item => item.jobs.at(-1)?.status === 'completed');
+  const segment = analyzed.segments[0];
+  const extended = await service.updateSegment(project.id, segment.id, { duration: 30 });
+  assert.equal(extended.segments[0].duration, 30);
+  assert.equal(extended.segments[0].extendedDuration, true);
+  assert.equal(Number(extended.segments[0].shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)), 30);
+  assert.equal(extended.segments[0].shots.every(shot => shot.approved === false), true);
+  const restored = await service.updateSegment(project.id, segment.id, { duration: 15 });
+  assert.equal(restored.segments[0].duration, 15);
+  assert.equal(restored.segments[0].extendedDuration, false);
+  assert.equal(Number(restored.segments[0].shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)), 15);
+});
+
 test('board template preferences survive reload without changing approvals, versions, shots or export history',async t=>{
   const {service,dir,providers}=await fixture(t);const p=await approved(service),segment=p.segments[0];
   assert.equal(segment.boardTemplateId,'classic-nine');
@@ -548,6 +747,34 @@ test('ledger keeps uploaded and generated image/video assets with account-safe m
   assert.equal(shotVideo.sceneId, shot.sceneId);
   assert.ok(records.every(record => !('dataDir' in record) && !('physicalPath' in record)));
   assert.equal(done.segments[0].shots[0].videoVersion, done.segments[0].shots[0].version);
+});
+
+test('speaker binding rejection is a definitive failed video job, not an unknown paid request', async t => {
+  const { service } = await fixture(t, {
+    submitVideo: async () => { throw Object.assign(new Error('请选择台词角色'), { code: 'DIALOGUE_SPEAKER_REQUIRED', safe: true }); },
+  });
+  const project = await approved(service);
+  await service.shotAction(project.id, project.segments[0].shots[0].id, 'video');
+  const failed = await waitFor(service, project.id, value => value.jobs.some(job => job.kind === 'video' && job.status === 'failed'));
+  const job = failed.jobs.find(item => item.kind === 'video');
+  assert.equal(job.error, '请选择台词角色');
+  assert.equal(job.status, 'failed');
+});
+
+test('generated media history records the Chinese prompt while excluding provider parameters', async t => {
+  const { service } = await fixture(t, {
+    generateCharacter: async (project, _character, _businessId, options) => {
+      await options?.onPrompt?.('中文人物提示词：古风宗门厨房，保持角色身份一致。');
+      return `/media/${project.id}/character-prompt.png`;
+    },
+  });
+  const project = await service.demo();
+  await service.characterAction(project.id, project.characters[0].id, 'generate');
+  await waitFor(service, project.id, value => value.jobs.some(job => job.kind === 'character' && job.status === 'completed'));
+  const record = (await service.ledger()).find(item => item.recordType === 'character-image' && item.characterId === project.characters[0].id && item.assetUrl.endsWith('character-prompt.png'));
+  assert.equal(record?.prompt, '中文人物提示词：古风宗门厨房，保持角色身份一致。');
+  assert.equal('videoModel' in (record ?? {}), false);
+  assert.equal('apiKey' in (record ?? {}), false);
 });
 
 test('ledger supplements a partially migrated project after its first new media record', async t => {
@@ -795,22 +1022,6 @@ test('trim and duration edits reuse a current video only inside its generated le
   assert.equal(shot.videoVersion, null);
 });
 
-test('Ark Seedance 1.0 video completion uses its two-second provider minimum', async t => {
-  let downloadOptions;
-  const { service } = await fixture(t, {
-    getVideoModel: () => 'doubao-seedance-1-0-pro-250528',
-    downloadVideo: async (p, _url, _shot, options) => {
-      downloadOptions = options;
-      return `/media/${p.id}/video.mp4`;
-    },
-  });
-  const p = await approved(service);
-  await service.shotAction(p.id, p.segments[0].shots[0].id, 'video');
-  const state = await waitFor(service, p.id, x => x.jobs.some(j => j.kind === 'video' && j.status === 'completed'));
-  assert.equal(downloadOptions.minDuration, 2);
-  assert.ok(state.segments[0].shots[0].videoDuration >= 2);
-});
-
 test('video download leaves audio policy to the provider prompt', async t => {
   let downloadOptions;
   const { service } = await fixture(t, {
@@ -965,7 +1176,7 @@ test('parallel segment generation exports nine current shots in stable order', a
   assert.match(done.exports[0].videoUrl, /001\.mp4$/);
 });
 
-test('image and video jobs bypass a running analysis while analyses remain ordered', async t => {
+test('image and video jobs bypass running analyses while different projects analyze concurrently', async t => {
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   const analyzed = [];
@@ -984,13 +1195,14 @@ test('image and video jobs bypass a running analysis while analyses remain order
     await service.analyze(first.id);
     await waitFor(service, first.id, () => analyzed.length === 1);
     await service.analyze(second.id);
+    await waitFor(service, first.id, () => analyzed.length === 2);
     await service.characterAction(imageProject.id, imageProject.characters[0].id, 'generate');
     await service.shotAction(videoProject.id, videoProject.segments[0].shots[0].id, 'video');
     await waitFor(service, imageProject.id, p => p.jobs.some(job => job.kind === 'character' && job.status === 'completed'));
     await waitFor(service, videoProject.id, p => p.jobs.some(job => job.kind === 'video' && job.status === 'completed'));
     assert.equal(calls.submit, 1);
-    assert.deepEqual(analyzed, [first.id]);
-    assert.equal((await service.get(second.id)).jobs[0].status, 'queued');
+    assert.deepEqual(analyzed.slice().sort(), [first.id, second.id].sort());
+    assert.equal((await service.get(second.id)).jobs[0].status, 'running');
   } finally { release(); }
   await waitFor(service, second.id, p => p.jobs[0]?.status === 'completed');
   assert.deepEqual(analyzed, [first.id, second.id]);
@@ -1240,4 +1452,66 @@ test('local archive cleanup requires confirmation, only removes referenced video
   assert.equal(cleaned.segments[0].shots[0].remoteVideoDeleted, true);
   const ledger = await service.ledger();
   assert.equal(ledger.some(record => record.recordType === 'shot-video' && record.remoteDeleted === true && record.assetUrl === ''), true);
+});
+
+test('look assets stay scoped to one character and reuse does not create a paid image job', async t => {
+  let importCount = 0;
+  const { service } = await fixture(t, {
+    importImage: async project => `/media/${project.id}/uploaded-${++importCount}.png`,
+  });
+  let project = await service.demo();
+  const [first, second] = project.characters;
+  for (const character of project.characters) {
+    await service.characterAction(project.id, character.id, 'upload', { dataUrl: 'data:image/png;base64,AA==' });
+    await service.characterAction(project.id, character.id, 'approve');
+  }
+  const target = project.looks.find(look => look.characterId === first.id);
+  assert.ok(target);
+  await service.lookAction(project.id, target.id, 'upload', { dataUrl: 'data:image/png;base64,AA==' });
+  await service.lookAction(project.id, target.id, 'approve');
+  project = await service.get(project.id);
+
+  const firstAssets = await service.lookAssets(project.id, first.id);
+  const secondAssets = await service.lookAssets(project.id, second.id);
+  assert.ok(firstAssets.some(asset => asset.kind === 'identity'));
+  assert.ok(firstAssets.some(asset => asset.kind === 'look'));
+  assert.ok(secondAssets.every(asset => asset.characterId === second.id));
+  assert.ok(firstAssets.every(asset => asset.characterId === first.id));
+
+  const identity = firstAssets.find(asset => asset.kind === 'identity');
+  const before = project.looks.find(look => look.id === target.id);
+  const beforeJobCount = project.jobs.length;
+  const reused = await service.reuseLook(project.id, target.id, {
+    sourceAssetId: identity.id,
+    expectedVersion: before.version,
+  });
+  const next = reused.looks.find(look => look.id === target.id);
+  assert.equal(next.reference, identity.reference);
+  assert.equal(next.approved, false);
+  assert.equal(next.version, before.version + 1);
+  assert.equal(next.appearance, identity.appearance);
+  assert.equal(reused.jobs.length, beforeJobCount);
+
+  const otherIdentity = secondAssets.find(asset => asset.kind === 'identity');
+  await assert.rejects(
+    service.reuseLook(project.id, target.id, { sourceAssetId: otherIdentity.id, expectedVersion: next.version }),
+    error => error.code === 'LOOK_ASSET_CHARACTER_MISMATCH',
+  );
+});
+
+test('look asset classification falls back when the model classifier fails', async t => {
+  const { service } = await fixture(t, {
+    classifyLookAsset: async () => { throw new Error('classifier unavailable'); },
+  });
+  const project = await service.demo();
+  const character = project.characters[0];
+  await service.characterAction(project.id, character.id, 'upload', { dataUrl: 'data:image/png;base64,AA==' });
+  await service.characterAction(project.id, character.id, 'approve');
+  const look = project.looks.find(item => item.characterId === character.id);
+  await service.updateLook(project.id, look.id, { name: '杂役服', appearance: '杂役工作服，深色布鞋。' });
+  await service.lookAction(project.id, look.id, 'upload', { dataUrl: 'data:image/png;base64,AA==' });
+  const assets = await service.lookAssets(project.id, character.id);
+  const classified = assets.find(asset => asset.kind === 'look');
+  assert.equal(classified.classification.source, 'fallback');
+  assert.equal(classified.classification.category, '杂役/工作服');
 });

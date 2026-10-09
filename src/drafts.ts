@@ -1,7 +1,7 @@
 import type { CharacterDraft, LookDraft, NarrativeMode, Project, SceneDraft, ShotDraft, SourceType, VisualStyle } from './types.ts';
 
-export type StoryDraft = Pick<Project, 'title' | 'novel' | 'style'>;
-export type ImportDraft = StoryDraft & { duration: 15 | 30; autoDuration: boolean; aspectRatio: '9:16' | '16:9'; sourceType: SourceType; narrativeMode: NarrativeMode; visualStyle: VisualStyle };
+export type StoryDraft = Pick<Project, 'title' | 'novel' | 'style'> & { llmModel?: string; sequelNovel?: string };
+export type ImportDraft = StoryDraft & { duration: 15 | 30; autoDuration: boolean; aspectRatio: '9:16' | '16:9'; sourceType: SourceType; narrativeMode: NarrativeMode; visualStyle: VisualStyle; videoMode: 'storyboard' | 'traditional' };
 interface DraftTypes { story: StoryDraft; character: CharacterDraft; scene: SceneDraft; look: LookDraft; shot: ShotDraft; import: ImportDraft }
 export type DraftKind = keyof DraftTypes;
 export type DraftRecords<K extends DraftKind> = Record<string, DraftTypes[K]>;
@@ -10,9 +10,17 @@ type DraftEntry<K extends DraftKind> = { value: DraftTypes[K]; updatedAt: number
 export const DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_STORAGE_LENGTH = 2_000_000;
 export const draftStorageKey = (kind: DraftKind) => `aiframe-drafts-v1:${kind}`;
-export const emptyImportDraft: ImportDraft = { title: '', novel: '', style: '电影写实，自然光影，细腻人物情绪', duration: 30, autoDuration: true, aspectRatio: '9:16', sourceType: 'auto', narrativeMode: 'auto', visualStyle: 'photorealistic' };
+export const emptyImportDraft: ImportDraft = { title: '', novel: '', style: '电影写实，自然光影，细腻人物情绪', llmModel: 'qwen3.7-plus', duration: 15, autoDuration: true, aspectRatio: '9:16', sourceType: 'auto', narrativeMode: 'auto', visualStyle: 'photorealistic', videoMode: 'storyboard' };
 export function storyDraftContentConflict(project: Pick<Project, 'novel' | 'style' | 'segments'>, draft: StoryDraft) {
   return project.segments.length > 0 && (project.novel !== draft.novel || project.style !== draft.style);
+}
+
+/** Append a user-provided sequel without changing the analyzed source prefix. */
+export function appendNovelContent(base: string, addition: string): string {
+  const suffix = addition.trim();
+  if (!suffix) return base;
+  const source = base.trimEnd();
+  return source ? `${source}\n${suffix}` : suffix;
 }
 
 export function browserDraftStorage(): DraftStorage | null {
@@ -22,19 +30,20 @@ function record(value: unknown): value is Record<string, unknown> { return !!val
 function cleanDraft<K extends DraftKind>(kind: K, value: unknown): DraftTypes[K] | null {
   if (!record(value)) return null;
   const textFields: Record<DraftKind, Record<string, number>> = {
-    story: { title: 160, novel: 120000, style: 2000 }, import: { title: 120, novel: 120000, style: 500 },
+    story: { title: 160, novel: 300000, style: 2000, llmModel: 100, sequelNovel: 300000 }, import: { title: 120, novel: 300000, style: 500, llmModel: 100 },
     character: { name: 100, appearance: 4000, evidence: 6000 }, scene: { name: 200, description: 4000 },
-    look: { name: 200, appearance: 4000 }, shot: { scene: 2000, sceneId: 200, action: 3000, camera: 1500, movementId: 40, movementPlan: 600, transitionPlan: 400, dialogue: 3000, narration: 3000, sourceEvidence: 1200 },
+    look: { name: 200, appearance: 4000 }, shot: { scene: 2000, sceneId: 200, action: 3000, camera: 1500, movementId: 40, movementPlan: 600, transitionPlan: 400, dialogue: 3000, dialogueSpeakerId: 100, narration: 3000, sourceEvidence: 1200 },
   };
   const result: Record<string, unknown> = {};
   for (const [field, max] of Object.entries(textFields[kind])) {
-    const optional = kind === 'shot' && (field === 'sourceEvidence' || field === 'narration');
+    const optional = (kind === 'shot' && (field === 'sourceEvidence' || field === 'narration' || field === 'dialogueSpeakerId')) || (kind === 'story' && (field === 'llmModel' || field === 'sequelNovel')) || ((kind === 'story' || kind === 'import') && field === 'llmModel');
     const movementOptional = kind === 'shot' && (field === 'movementId' || field === 'movementPlan' || field === 'transitionPlan');
     if ((optional || movementOptional) && value[field] === undefined) continue;
     const text = value[field] ?? (field === 'sceneId' ? '' : undefined);
     if (typeof text !== 'string' || text.length > max) return null;
     result[field] = text;
   }
+  if (['story', 'import'].includes(kind) && result.llmModel !== undefined && (typeof result.llmModel !== 'string' || !/^[a-z0-9._-]+$/.test(result.llmModel))) return null;
   if (kind === 'character') {
     if (!['protagonist', 'supporting', 'extra'].includes(String(value.role))) return null;
     if (!Array.isArray(value.aliases) || value.aliases.length > 100 || value.aliases.some(alias => typeof alias !== 'string' || alias.length > 100)) return null;
@@ -52,16 +61,19 @@ function cleanDraft<K extends DraftKind>(kind: K, value: unknown): DraftTypes[K]
     const sourceType = value.sourceType ?? 'auto';
     const narrativeMode = value.narrativeMode ?? 'auto';
     const visualStyle = value.visualStyle ?? 'photorealistic';
+    const videoMode = value.videoMode ?? 'storyboard';
     if (!['9:16', '16:9'].includes(String(aspectRatio))) return null;
     if (!['auto', 'novel', 'script', 'article', 'paper', 'news'].includes(String(sourceType))) return null;
     if (!['auto', 'narrator', 'protagonist'].includes(String(narrativeMode))) return null;
     if (!['photorealistic', '2d-animation', '3d-animation'].includes(String(visualStyle))) return null;
+    if (!['storyboard', 'traditional'].includes(String(videoMode))) return null;
     result.duration = Number(value.duration); result.autoDuration = value.autoDuration;
     // Keep pre-aspect/source drafts readable without rewriting them on load.
     if (value.aspectRatio !== undefined) result.aspectRatio = aspectRatio;
     if (value.sourceType !== undefined) result.sourceType = sourceType;
     if (value.narrativeMode !== undefined) result.narrativeMode = narrativeMode;
     if (value.visualStyle !== undefined) result.visualStyle = visualStyle;
+    if (value.videoMode !== undefined) result.videoMode = videoMode;
   }
   const serialized = JSON.stringify(result);
   if (/data:[^;\s]+;base64,|\bsk-[a-z0-9_-]{20,}|\bBearer\s+[a-z0-9._-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(serialized)) return null;

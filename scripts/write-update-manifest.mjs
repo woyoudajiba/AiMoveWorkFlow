@@ -21,7 +21,7 @@ const manifest = {
   displayVersion: pkg.version,
   url: `https://wsfile.cn/workf/downloads/${publicInstallerName}`,
   sha256,
-  releaseNotes: `修复长篇分集剧本开头的作品设定和目录被误判为分镜内容，导致分析无法从第一集继续的问题。`,
+  releaseNotes: `新增人物造型复用：按人物隔离身份基准和历史造型，用户可按造型名称选择已有图片直接复用，不重复提交生图；复用后仍需人工审核，并保持纯白无场景的人物参考图约束。`,
 };
 await writeFile(path.join(root, 'client', 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 console.log(JSON.stringify({ path: path.join(root, 'client', 'latest.json'), ...manifest }, null, 2));

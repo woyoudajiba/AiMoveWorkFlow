@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DRAFT_TTL_MS, draftStorageKey, mergeDraftChanges, readDrafts, storyDraftContentConflict, writeDrafts } from '../src/drafts.ts';
+import { DRAFT_TTL_MS, appendNovelContent, draftStorageKey, mergeDraftChanges, readDrafts, storyDraftContentConflict, writeDrafts } from '../src/drafts.ts';
 
 function storage() {
   const values = new Map();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key), values };
 }
 const story = { title: '末班灯', novel: '她在雨夜里等到末班电车，手里的信终于交给了故人。', style: '电影写实' };
+
+test('sequel content appends after the original without changing its prefix', () => {
+  const original = '第一季正文。\n\n';
+  assert.equal(appendNovelContent(original, '第二季第一集。'), '第一季正文。\n第二季第一集。');
+  assert.equal(appendNovelContent(original, '   '), original);
+  assert.equal(appendNovelContent('', '后续内容'), '后续内容');
+});
 
 test('unsaved long text and project-scoped drafts survive a fresh read', () => {
   const local = storage();
@@ -46,7 +53,7 @@ test('malformed, outdated, oversized and sensitive draft values are safely ignor
   assert.deepEqual(readDrafts(local, 'story', 2000).drafts, {});
   local.setItem(draftStorageKey('story'), JSON.stringify({ version: 42, entries: { a: { value: story, updatedAt: 1000 } } }));
   assert.deepEqual(readDrafts(local, 'story', 2000).drafts, {});
-  assert.equal(writeDrafts(local, 'story', { a: { ...story, novel: '文'.repeat(120001) } }, 2000), 'skipped');
+  assert.equal(writeDrafts(local, 'story', { a: { ...story, novel: '文'.repeat(300001) } }, 2000), 'skipped');
   assert.equal(writeDrafts(local, 'story', { a: { ...story, novel: 'data:image/png;base64,AAABBB' } }, 2000), 'skipped');
   assert.equal(writeDrafts(local, 'story', { a: { ...story, novel: 'sk-testcredential12345678901234567890' } }, 2000), 'skipped');
   assert.deepEqual(readDrafts(local, 'story', 3000).drafts, {});
@@ -100,7 +107,7 @@ test('an invalid paste preserves the last safe draft without storing rejected co
   assert.equal(writeDrafts(local, 'story', { projectA: { ...story, novel: 'sk-testcredential12345678901234567890' } }, 2000), 'skipped');
   assert.deepEqual(readDrafts(local, 'story', 3000).drafts, { projectA: story });
   assert.equal(local.getItem(draftStorageKey('story')).includes('testcredential'), false);
-  assert.equal(writeDrafts(local, 'story', { projectA: { ...story, novel: '文'.repeat(120001) } }, 4000), 'skipped');
+  assert.equal(writeDrafts(local, 'story', { projectA: { ...story, novel: '文'.repeat(300001) } }, 4000), 'skipped');
   assert.deepEqual(readDrafts(local, 'story', 5000).drafts, { projectA: story });
   assert.deepEqual(readDrafts(local, 'story', DRAFT_TTL_MS + 1001).drafts, {});
 });

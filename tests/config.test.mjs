@@ -102,6 +102,7 @@ test('Xiongmao Seedance official variants share the relay credential and remain 
     'xiongmao-seedance-2-0-official', 'xiongmao-seedance-2-0-official-fast', 'xiongmao-seedance-2-0-official-mini',
     'xiongmao-seedance-2-0-promo', 'xiongmao-seedance-2-0-promo-fast', 'xiongmao-seedance-2-0-promo-mini',
     'xiongmao-seedance-2-0-special', 'xiongmao-seedance-2-0-special-fast', 'xiongmao-seedance-2-0-special-mini',
+    'xiongmao-seedance-2-5-special',
   ]) {
     await config.update({ videoModel: id });
     assert.equal(config.settings().videoModel, id);
@@ -115,7 +116,7 @@ test('Ark credentials are isolated and Seedance model presets are valid', async 
   let stored;
   const config=await createConfig({env:{ARK_API_KEY:'private-ark-fixture'},save:async value=>{stored=value;}});
   assert.equal(config.public().arkConfigured,true);
-  for(const id of ['doubao-seedance-2-5','doubao-seedance-2-0-pro','doubao-seedance-2-0-fast','doubao-seedance-2-0-mini','doubao-seedance-1-0-pro-250528']) {
+  for(const id of ['doubao-seedance-2-5','doubao-seedance-2-0-pro','doubao-seedance-2-0-fast','doubao-seedance-2-0-mini']) {
     await config.update({videoModel:id});
     assert.equal(config.settings().videoModel,id);
     assert.equal(stored.videoModel,id);
@@ -123,7 +124,8 @@ test('Ark credentials are isolated and Seedance model presets are valid', async 
   assert.equal(JSON.stringify(config.public()).includes('private-ark-fixture'),false);
   const reloaded=await createConfig({env:{},load:async()=>stored});
   assert.equal(reloaded.public().arkConfigured,true);
-  assert.equal(reloaded.public().videoModel,'doubao-seedance-1-0-pro-250528');
+  assert.equal(reloaded.public().videoModel,'doubao-seedance-2-0-mini');
+  await assert.rejects(config.update({videoModel:'doubao-seedance-1-0-pro-250528'}),/模型/);
   await assert.rejects(config.update({videoModel:'doubao-unknown-video'}),/模型/);
 });
 

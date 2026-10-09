@@ -23,7 +23,7 @@ async function fixture(t){
 
 test('Agent discovers templates, saves a preference, and forwards preview overrides without model calls',async t=>{
   const {agent,writes}=await fixture(t);
-  const tools=listAgentTools();assert.equal(tools.length,27);assert.equal(tools.find(tool=>tool.name==='list_board_templates').annotations.readOnlyHint,true);
+  const tools=listAgentTools();assert.equal(tools.length,28);assert.equal(tools.find(tool=>tool.name==='list_board_templates').annotations.readOnlyHint,true);
   assert.equal((await agent.execute('list_board_templates')).templates.length,3);
   await agent.execute('set_board_template',{projectId:'p',segmentId:'seg',templateId:'eight-one'});
   const preview=await agent.execute('storyboard_preview',{projectId:'p',segmentId:'seg',templateId:'three-three'});

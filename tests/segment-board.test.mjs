@@ -8,6 +8,7 @@ import { createProject, validateAnalysis } from '../server/domain.mjs';
 import { resolveMediaPath } from '../server/media.mjs';
 import { createProviders } from '../server/providers.mjs';
 import { createService } from '../server/service.mjs';
+import { listVideoOptions } from '../server/video-options.mjs';
 
 const shots = (count = 5) => Array.from({ length: count }, (_, index) => ({
   sceneId: 's1', scene: '夜雨车站', action: `镜头 ${index + 1} 的连续动作`, camera: '中景，缓慢推进', movementId: 'move-3', movementPlan: '从中景缓慢推进至近景，保持主体在画面中心。', transitionPlan: '承接上一镜右向左视线，沿动作轴自然切换。', dialogue: '', characterIds: [], duration: 3,
@@ -93,7 +94,7 @@ test('generateSegmentBoard crops horizontal projects to 1280x720 shots', async t
   const project = { id: 'segment-provider-landscape', generationMode: 'segment-board', aspectRatio: '16:9', style: '新闻纪实', characters: [], scenes: [{ id: 's1', name: '数据图表', description: '横向图表' }], looks: [] };
   const segment = { id: 'seg1', number: 1, title: '结果', duration: 15, boardTemplateId: 'classic-nine', shots: shots(3).map((shot, index) => ({ id: `shot-${index + 1}`, number: index + 1, ...shot })) };
   const result = await providers.generateSegmentBoard(project, segment, 'business-landscape');
-  assert.equal(requests[0].body.images.length, 0);
+  assert.equal(Object.hasOwn(requests[0].body,'images'), false);
   assert.match(requests[0].body.prompt, /Input images: none/);
   assert.equal(result.storyboardLayout.shotAspectRatio, '16:9');
   assert.equal(result.storyboardLayout.shotWidth, 1280);
@@ -177,6 +178,8 @@ test('segment-board video submission uses one complete storyboard task with orde
    assert.match(body.content[0].text, /subtitle|字幕/i);
   assert.match(body.content[0].text, /故事板上的编号|标签|文字.*视频|不得.*文字/i);
   assert.match(body.content[0].text, /残留少量审核文字.*擦除|忽略/);
+  assert.match(body.content[0].text, /OCR.*文字|识别文字/);
+  assert.match(body.content[0].text, /不得.*朗读.*转写.*翻译.*配音/);
   assert.doesNotMatch(body.content[0].text, /原文未提供，待确认创作设定/);
   assert.equal(body.generate_audio, undefined, 'MiniMax H3 V2 has no documented generate_audio request field; prompt guidance controls unintended voices');
    assert.equal(body.content[0].text.endsWith('与参考素材完全一致'), true);
@@ -280,11 +283,58 @@ test('segment-board video uploads character references for MiniMax and Ark', asy
     assert.equal(requests[0].url, item.url);
     const body = requests[0].body;
     assert.equal(body.content[0].text.endsWith('与参考素材完全一致'), true);
+    assert.match(body.content[0].text, /OCR.*文字|识别文字/);
+    assert.match(body.content[0].text, /不得.*朗读.*转写.*翻译.*配音/);
      assert.equal(body.content[1].role, item.keyName === 'minimaxKey' ? 'reference_image' : 'first_frame');
     assert.equal(body.content[2].role, 'reference_image');
     assert.equal(body.content[3].role, 'reference_image');
     assert.equal(body.content[4].role, 'reference_image');
     assert.equal(body.content.length, 5);
+  }
+});
+
+test('every configured video model accepts the shared fifteen-second storyboard ceiling', async t => {
+  const imageBytes = await sharp({ create: { width: 720, height: 1280, channels: 3, background: '#274d38' } }).png().toBuffer();
+  const dataUrl = `data:image/png;base64,${imageBytes.toString('base64')}`;
+  for (const option of listVideoOptions()) {
+    if (option.minDurationSeconds === option.maxDurationSeconds && option.minDurationSeconds !== 15) continue;
+    const root = await mkdtemp(path.join(tmpdir(), `aiframe-video-model-${option.id}-`));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const requests = [];
+    const settings = option.provider === 'MiniMax'
+      ? { minimaxKey: 'minimax-test-key' }
+      : option.provider === '熊猫Ai'
+        ? { xiongmaoMinimaxH3Key: 'xiongmao-test-key' }
+        : { arkKey: 'ark-test-key' };
+    const providers = createProviders({
+      mediaRoot: root,
+      getSettings: () => ({ ...settings, videoModel: option.id }),
+      requestJson: async (url, request) => {
+        requests.push({ url, body: request.body });
+        return option.provider === '火山方舟'
+          ? { id: `task-${option.id}`, status: 'queued' }
+          : { task_id: `task-${option.id}`, status: 'queued' };
+      },
+      requestMultipartJson: async () => ({ url: 'https://cdn.example/reference.png' }),
+    });
+    const project = {
+      id: `model-${option.id}`,
+      generationMode: 'segment-board',
+      aspectRatio: '9:16',
+      style: '电影写实',
+      characters: [],
+      scenes: [{ id: 's1', name: '夜雨车站', description: '夜晚站台' }],
+      looks: [],
+    };
+    const image = await providers.importImage(project, dataUrl);
+    const segment = {
+      id: 'seg1', number: 1, title: '雨夜重逢', duration: 15, storyboardImage: image,
+      shots: shots(3).map((shot, index) => ({ ...shot, id: `shot-${index + 1}`, number: index + 1, duration: 5, image })),
+    };
+    await providers.submitSegmentVideo(project, segment, `business-${option.id.replace(/[^A-Za-z0-9_-]/g, '-')}`);
+    const videoRequest = requests.at(-1);
+    assert.ok(videoRequest, `${option.id} should submit a video task`);
+    assert.equal(videoRequest.body.duration, 15, `${option.id} must receive a fifteen-second task`);
   }
 });
 
@@ -388,6 +438,168 @@ test('segment-board creates one complete segment-video job and one ledger record
   assert.equal(project.segments[0].shots.every(shot => shot.video === null), true);
   const ledger = await service.ledger();
   assert.equal(ledger.filter(record => record.recordType === 'segment-video').length, 1);
+
+  const regenerated = await service.segmentAction(project.id, segment.id, 'generate-videos', { reuseExisting: false });
+  assert.equal(regenerated.jobs.filter(job => job.kind === 'segment-video').length, 2);
+  project = await waitFor(service, project.id, value => value.jobs.filter(job => job.kind === 'segment-video' && job.status === 'completed').length === 2);
+  const versionedLedger = await service.ledger();
+  assert.equal(versionedLedger.filter(record => record.recordType === 'segment-video').length, 2);
+});
+
+test('traditional mode submits one segment video with scene, current look and prop references', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'aiframe-traditional-provider-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = await sharp({ create: { width: 720, height: 1280, channels: 3, background: '#274d38' } }).png().toBuffer();
+  const requests = [];
+  const providers = createProviders({
+    mediaRoot: root,
+    getSettings: () => ({ minimaxKey: 'test-key', videoModel: 'MiniMax-H3' }),
+    requestJson: async (_url, options) => { requests.push(options.body); return { task_id: 'traditional-task', status: 'queued' }; },
+    download: async () => bytes,
+  });
+  const project = {
+    id: 'traditional-provider', generationMode: 'segment-board', videoMode: 'traditional', aspectRatio: '9:16',
+    style: '电影写实', sourceType: 'script', visualStyle: 'photorealistic', characters: [], scenes: [], looks: [], assets: [],
+  };
+  const reference = async () => providers.importImage(project, `data:image/png;base64,${bytes.toString('base64')}`);
+  const [sceneOne, sceneTwo, linIdentity, linRain, linNight, meiLook, sword] = await Promise.all([
+    reference(), reference(), reference(), reference(), reference(), reference(), reference(),
+  ]);
+  project.characters = [
+    { id: 'lin', name: '林晚', appearance: '黑发，清瘦', reference: linIdentity, approved: true, version: 1, referenceVersion: 1 },
+    { id: 'mei', name: '梅姨', appearance: '银发，沉稳', reference: linIdentity, approved: true, version: 1, referenceVersion: 1 },
+  ];
+  project.scenes = [
+    { id: 's1', name: '雨夜车站', description: '夜晚站台', reference: sceneOne, approved: true, version: 1, referenceVersion: 1 },
+    { id: 's2', name: '清晨巷口', description: '清晨巷口', reference: sceneTwo, approved: true, version: 1, referenceVersion: 1 },
+  ];
+  project.looks = [
+    { id: 'look-lin-rain', sceneId: 's1', characterId: 'lin', name: '雨夜风衣', appearance: '深色风衣', reference: linRain, approved: true, version: 1, referenceVersion: 1 },
+    { id: 'look-lin-night', sceneId: 's2', characterId: 'lin', name: '清晨便装', appearance: '浅色便装', reference: linNight, approved: true, version: 1, referenceVersion: 1 },
+    { id: 'look-mei-night', sceneId: 's2', characterId: 'mei', name: '清晨长衫', appearance: '灰色长衫', reference: meiLook, approved: true, version: 1, referenceVersion: 1 },
+  ];
+  project.assets = [{ id: 'sword', name: '旧剑', kind: 'weapon', description: '有缺口的长剑', reference: sword, approved: true, version: 1, referenceVersion: 1 }];
+  const segment = {
+    id: 'seg-traditional', number: 1, title: '巷口交锋', duration: 15,
+    shots: [
+      { ...shots(1)[0], id: 'shot-1', number: 1, sceneId: 's1', characterIds: ['lin'], assetIds: ['sword'], duration: 5 },
+      { ...shots(1)[0], id: 'shot-2', number: 2, sceneId: 's2', characterIds: ['lin', 'mei'], assetIds: [], duration: 5 },
+      { ...shots(1)[0], id: 'shot-3', number: 3, sceneId: 's2', characterIds: ['mei'], assetIds: [], duration: 5 },
+    ],
+  };
+  await providers.submitSegmentVideo(project, segment, 'traditional-business');
+  assert.equal(requests.length, 1);
+  const body = requests[0];
+  const prompt = body.content[0].text;
+  const imageInputs = body.content.filter(item => item.type === 'image_url');
+  assert.equal(imageInputs.length, 6, 'two scene references, three scene-specific looks and one prop must be submitted');
+  assert.ok(imageInputs.every(item => item.role === 'reference_image'));
+  assert.match(prompt, /传统多参考图模式/);
+  assert.doesNotMatch(prompt, /九宫格/);
+  assert.match(prompt, /镜头 1/);
+  assert.match(prompt, /对白（仅声音）/);
+
+  const xiongmaoRequests = [];
+  const xiongmao = createProviders({
+    mediaRoot: root,
+    getSettings: () => ({ xiongmaoMinimaxH3Key: 'test-key', videoModel: 'xiongmao-minimaxh3' }),
+    requestJson: async (_url, options) => { xiongmaoRequests.push(options.body); return { task_id: 'traditional-xiongmao-task', status: 'queued' }; },
+    requestMultipartJson: async () => ({ url: 'https://example.test/reference.png' }),
+  });
+  await xiongmao.submitSegmentVideo(project, { ...segment, shots: segment.shots.slice(0, 1) }, 'traditional-xiongmao-business');
+  assert.equal(xiongmaoRequests[0].mode, 'reference', 'traditional mode must never treat its scene reference as a first frame');
+
+  project.scenes[0].approved = false;
+  await assert.rejects(
+    providers.submitSegmentVideo(project, segment, 'traditional-missing-scene'),
+    error => error.code === 'SCENE_NOT_APPROVED',
+  );
+  assert.equal(requests.length, 1, 'missing scene approval must stop before another provider request');
+});
+
+test('traditional mode creates one segment-video job without storyboard generation', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'aiframe-traditional-service-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const traditionalAnalysis = {
+    characters: [{ id: 'lin', name: '林晚', role: 'protagonist', aliases: [], appearance: '黑发，清瘦', evidence: '林晚走进雨夜车站' }],
+    scenes: [{ id: 's1', name: '雨夜车站', description: '夜晚站台' }],
+    looks: [{ id: 'look-1', sceneId: 's1', characterId: 'lin', name: '雨夜风衣', appearance: '深色风衣' }],
+    segments: [{ title: '雨夜重逢', summary: '林晚在车站重逢', duration: 15, shots: shots(3).map((shot, index) => ({ ...shot, duration: 5, characterIds: ['lin'], sceneId: 's1', dialogue: index === 1 ? '你终于来了。' : '' })) }],
+  };
+  let submitCalls = 0;
+  const providers = {
+    analyze: async () => structuredClone(traditionalAnalysis),
+    getVideoModel: () => 'MiniMax-H3',
+    importImage: async project => `/media/${project.id}/reference-${Math.random().toString(16).slice(2)}.png`,
+    submitSegmentVideo: async project => { submitCalls += 1; assert.equal(project.videoMode, 'traditional'); assert.equal(project.segments[0].storyboardImage, null); return { id: 'traditional-service-task', status: 'queued' }; },
+    pollVideo: async () => ({ id: 'traditional-service-task', status: 'completed', url: 'https://example.test/traditional.mp4', duration: 15 }),
+    downloadVideo: async project => `/media/${project.id}/traditional.mp4`,
+  };
+  const service = await createService({ dataDir: root, providers, pollIntervalMs: 1 });
+  t.after(() => service.close());
+  const created = await service.create({ title: '传统模式服务', novel: '雨夜重逢', duration: 15, generationMode: 'segment-board', videoMode: 'traditional' });
+  assert.equal(created.videoMode, 'traditional');
+  await service.analyze(created.id);
+  let project = await waitFor(service, created.id, value => value.jobs.at(-1)?.status === 'completed');
+  const segment = project.segments[0];
+  assert.equal(segment.storyboardImage, null);
+  assert.equal(project.jobs.some(job => job.kind === 'storyboard'), false);
+  const character = project.characters[0];
+  await service.characterAction(project.id, character.id, 'upload', { dataUrl: 'data:image/png;base64,AA==' });
+  await service.characterAction(project.id, character.id, 'approve');
+  const scene = project.scenes[0];
+  await service.sceneAction(project.id, scene.id, 'upload', { dataUrl: 'data:image/png;base64,AA==' });
+  await service.sceneAction(project.id, scene.id, 'approve');
+  const look = project.looks[0];
+  await service.lookAction(project.id, look.id, 'upload', { dataUrl: 'data:image/png;base64,AA==' });
+  await service.lookAction(project.id, look.id, 'approve');
+  project = await service.segmentAction(project.id, segment.id, 'approve');
+  project = await service.segmentAction(project.id, segment.id, 'generate-videos');
+  assert.equal(project.jobs.filter(job => job.kind === 'segment-video').length, 1);
+  assert.equal(project.jobs.filter(job => job.kind === 'video').length, 0);
+  project = await waitFor(service, project.id, value => value.jobs.some(job => job.kind === 'segment-video' && job.status === 'completed'));
+  assert.equal(submitCalls, 1);
+  assert.ok(project.segments[0].video);
+});
+
+test('segment video model minimums are rejected before a task is queued', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'aiframe-segment-video-minimum-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let submitCalls = 0;
+  const shortAnalysis = {
+    characters: [],
+    scenes: [{ id: 's1', name: '夜雨车站', description: '夜晚站台' }],
+    looks: [],
+    segments: [{ title: '短片段', summary: '三秒节奏片段', duration: 3, shots: shots(3).map(shot => ({ ...shot, duration: 1 })) }],
+  };
+  const providers = {
+    analyze: async () => structuredClone(shortAnalysis),
+    generateSegmentBoard: async (project, segment) => ({
+      storyboardImage: `/media/${project.id}/board.png`,
+      storyboardLayout: { columns: 3, rows: 1 },
+      shotImages: Object.fromEntries(segment.shots.map(shot => [shot.id, `/media/${project.id}/${shot.id}.png`])),
+    }),
+    getVideoModel: () => 'MiniMax-H3',
+    submitSegmentVideo: async () => { submitCalls += 1; return { id: 'should-not-submit', status: 'queued' }; },
+    pollVideo: async () => ({ id: 'should-not-submit', status: 'completed', url: 'https://example.test/should-not-submit.mp4' }),
+    downloadVideo: async project => `/media/${project.id}/segment.mp4`,
+  };
+  const service = await createService({ dataDir: root, providers, pollIntervalMs: 1 });
+  t.after(() => service.close());
+  const created = await service.create({ title: '最小时长校验', novel: '短片段', duration: 15, generationMode: 'segment-board' });
+  await service.analyze(created.id);
+  let project = await waitFor(service, created.id, value => value.jobs.at(-1)?.status === 'completed');
+  const segment = project.segments[0];
+  await service.segmentAction(project.id, segment.id, 'generate-images');
+  project = await waitFor(service, project.id, value => value.jobs.some(job => job.kind === 'storyboard' && job.status === 'completed'));
+  await service.segmentAction(project.id, segment.id, 'approve');
+  await assert.rejects(
+    service.segmentAction(project.id, segment.id, 'generate-videos', { videoModel: 'MiniMax-H3' }),
+    error => error.code === 'VIDEO_DURATION_UNSUPPORTED' && /4 到 15 秒/.test(error.message),
+  );
+  project = await service.get(project.id);
+  assert.equal(project.jobs.some(job => job.kind === 'segment-video'), false);
+  assert.equal(submitCalls, 0);
 });
 
 async function waitFor(service, id, predicate) {

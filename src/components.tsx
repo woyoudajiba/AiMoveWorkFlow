@@ -53,3 +53,20 @@ export function ToastRegion({ children, modalKey }: { children: ReactNode; modal
   useLayoutEffect(() => { setHost(document.querySelector('dialog[open]') || document.body); }, [children, modalKey]);
   return createPortal(<div className="toast-stack" aria-live="polite">{children}</div>, host);
 }
+
+export function ImageLightbox({ src, alt, close }: { src: string; alt: string; close: () => void }) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', onKeyDown);
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener('keydown', onKeyDown); };
+  }, [close]);
+  return createPortal(
+    <div className="image-lightbox" role="dialog" aria-modal="true" aria-label="查看原图" onClick={event => { if (event.target === event.currentTarget) close(); }}>
+      <button className="image-lightbox-close" type="button" aria-label="关闭原图预览" title="关闭" onClick={close}><X size={22} /></button>
+      <img src={src} alt={alt} />
+    </div>,
+    document.body,
+  );
+}

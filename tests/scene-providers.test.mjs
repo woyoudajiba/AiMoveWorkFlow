@@ -27,6 +27,8 @@ test('scene look is a horizontal front-side-back sheet, identity reference does 
   assert.match(body.prompt,/front.*side.*back/is);assert.match(body.prompt,/白衬衫/);assert.doesNotMatch(body.prompt,/米色风衣/);
   assert.match(body.prompt,/identity only/i);assert.match(body.prompt,/do not copy.*clothing/i);
   assert.match(body.prompt,/equal total height/i);assert.match(body.prompt,/shared ground line/i);
+  assert.match(body.prompt,/pure white or near-white studio background only/i);
+  assert.match(body.prompt,/no scene.*building.*room.*landscape.*props/is);
 });
 
 test('identity regeneration creates the approved horizontal character design sheet',async t=>{
@@ -72,7 +74,7 @@ test('submitted still receives adjacent same-scene plan but does not leak it aft
 test('vertical shot uses only the selected scene look and never the other scene outfit',async t=>{
   const {provider,project,requests}=await setup(t);
   await provider.generateShot(project,{sceneId:'office',scene:'办公室',action:'看窗外',camera:'中景',characterIds:['lin']},'shot-job');
-  const body=requests[0];assert.equal(body.aspectRatio,'9:16');assert.equal(body.images.length,0);
+  const body=requests[0];assert.equal(body.aspectRatio,'9:16');assert.equal(Object.hasOwn(body,'images'),false);
   assert.match(body.prompt,/白衬衫/);assert.doesNotMatch(body.prompt,/米色风衣/);assert.match(body.prompt,/one instant/i);
 });
 

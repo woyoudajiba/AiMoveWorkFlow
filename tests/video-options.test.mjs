@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { estimateVideoCostCny, listVideoOptions, resolveVideoOption } from '../server/video-options.mjs';
+import { estimateVideoCostCny, estimateVideoCostRangeCny, listVideoOptions, resolveVideoOption } from '../server/video-options.mjs';
 
 test('video catalog exposes the requested rates and duration limits', () => {
   const options = listVideoOptions();
@@ -17,6 +17,13 @@ test('video catalog exposes the requested rates and duration limits', () => {
   assert.equal(estimateVideoCostCny('MiniMax-H3-Max', '480P', 30), 9.9);
   assert.equal(estimateVideoCostCny('doubao-seedance-2-5', '720p', 15), 22);
   assert.equal(resolveVideoOption('MiniMax-H3-Max', '480p').maxDurationSeconds, 15);
+});
+
+test('Seedance 1.0 is no longer exposed or accepted', () => {
+  const options = listVideoOptions();
+  assert.equal(options.some(option => option.id.startsWith('doubao-seedance-1-0-')), false);
+  assert.throws(() => resolveVideoOption('doubao-seedance-1-0-pro-250528', '1080p'), error => error.code === 'MODEL_UNSUPPORTED');
+  assert.throws(() => resolveVideoOption('doubao-seedance-1-0-pro-fast-250528', '1080p'), error => error.code === 'MODEL_UNSUPPORTED');
 });
 
 test('Xiongmao Seedance official variants expose quality-specific resolutions and ranges', () => {
@@ -54,7 +61,7 @@ test('Xiongmao Seedance promo variants expose screenshot price ranges', () => {
   assert.deepEqual(resolveVideoOption('xiongmao-seedance-2-0-promo-mini', '720p').pricePerSecondCnyRange, { min: 0.345, max: 1.59 });
 });
 
-test('Xiongmao Seedance special variants are fixed 15-second options with unknown pricing', () => {
+test('Xiongmao Seedance special variants expose approximate per-call ranges', () => {
   for (const [id, quality] of [
     ['xiongmao-seedance-2-0-special', '高清'],
     ['xiongmao-seedance-2-0-special-fast', '快速'],
@@ -65,5 +72,22 @@ test('Xiongmao Seedance special variants are fixed 15-second options with unknow
     assert.equal(option.maxDurationSeconds, 15);
     assert.equal(option.quality, quality);
     assert.equal(option.pricePerSecondCnyRange, null);
+    assert.deepEqual(option.pricePerCallCnyRange, { min: 2.44, max: 16.59 });
+    assert.deepEqual(resolveVideoOption(id, '480p').pricePerCallCnyRange, { min: 1.59, max: 7.69 });
+    assert.deepEqual(estimateVideoCostRangeCny(id, '720p', 15), { min: 2.44, max: 16.59 });
+    assert.equal(estimateVideoCostCny(id, '720p', 15), null);
   }
+});
+
+test('Xiongmao Seedance 2.5 special is an exact 30-second per-call option', () => {
+  const option = resolveVideoOption('xiongmao-seedance-2-5-special', '1080p');
+  assert.equal(option.provider, '熊猫Ai');
+  assert.equal(option.providerModel, 'seedance-2-5-special');
+  assert.equal(option.minDurationSeconds, 30);
+  assert.equal(option.maxDurationSeconds, 30);
+  assert.equal(option.pricePerSecondCny, null);
+  assert.equal(option.pricePerCallCnyRange, null);
+  assert.deepEqual(listVideoOptions().find(item => item.id === 'xiongmao-seedance-2-5-special')?.resolutions.map(item => item.id), ['720p', '1080p']);
+  assert.equal(estimateVideoCostCny('xiongmao-seedance-2-5-special', '720p', 30), null);
+  assert.equal(estimateVideoCostRangeCny('xiongmao-seedance-2-5-special', '720p', 30), null);
 });

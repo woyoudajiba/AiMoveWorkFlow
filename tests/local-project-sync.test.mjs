@@ -18,14 +18,29 @@ test('local sync keeps the four fixed folders and routes assets by type', () => 
   assert.deepEqual(plan.directories, ['Actor_image', 'Story_image', 'Movie', 'Analysis']);
   assert.ok(plan.assets.some(item => item.relativePath === 'Actor_image/character-001-林默.png'));
   assert.ok(plan.assets.some(item => item.relativePath === 'Story_image/segment-001-shot-01.png'));
-  assert.ok(plan.assets.some(item => item.relativePath === 'Movie/segment-001.mp4'));
-  assert.ok(plan.assets.some(item => item.relativePath === 'Movie/export-001.mp4'));
-  assert.ok(plan.assets.some(item => item.relativePath === 'Analysis/export-001-manifest.json'));
+  assert.ok(plan.assets.some(item => item.relativePath === 'Movie/1-001.mp4'));
+  assert.ok(plan.assets.some(item => item.relativePath === 'Movie/1-001（1）.mp4'));
+  assert.ok(plan.assets.some(item => item.relativePath === 'Analysis/1-001-manifest.json'));
   assert.deepEqual(plan.videoUrls, [
     '/media/project-1/seg.mp4',
     '/media/project-1/shot.mp4',
     '/media/project-1/export-aabbccdd/project.mp4',
   ]);
+});
+
+test('local sync keeps the first generated segment video as the base name and suffixes regenerated versions', () => {
+  const versioned = structuredClone(project);
+  versioned.segments[0].episodeNumber = 1;
+  versioned.segments[0].number = 4;
+  versioned.segments[0].video = '/workf/media/project-1/new-segment.mp4?account=abc';
+  versioned.exports = [];
+  versioned.mediaHistory = [
+    { recordType: 'segment-video', assetUrl: '/workf/media/project-1/old-segment.mp4?account=abc', segmentId: 'segment-1', number: 4, version: 'old' },
+    { recordType: 'segment-video', assetUrl: '/workf/media/project-1/new-segment.mp4?account=abc', segmentId: 'segment-1', number: 4, version: 'new' },
+  ];
+  const plan = buildLocalProjectSync(versioned);
+  assert.ok(plan.assets.some(item => item.url.includes('/old-segment.mp4') && item.relativePath === 'Movie/1-001.mp4'));
+  assert.ok(plan.assets.some(item => item.url.includes('/new-segment.mp4') && item.relativePath === 'Movie/1-001（1）.mp4'));
 });
 
 test('cleanup path removes public base and query but never changes project identity', () => {

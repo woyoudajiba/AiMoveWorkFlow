@@ -108,6 +108,26 @@ test('one analysis keeps its chosen model across chunks even if the settings cha
   assert.ok(requests.every(({url,options})=>url===tokenUrl&&options.body.model==='deepseek-v4.1-flash'&&options.headers.Authorization==='Bearer token-fixture'));
 });
 
+test('project model selection overrides account default while keeping each analysis route stable', async () => {
+  const requests = [];
+  const provider = createProviders({
+    mediaRoot: tmpdir(),
+    getSettings: () => ({ llmModel: 'qwen3.7-plus', llmKey: 'coding-fixture', tokenPlanKey: 'token-fixture' }),
+    requestJson: async (url, options) => {
+      requests.push({ url, options });
+      return analysisResponse();
+    },
+  });
+  await Promise.all([
+    provider.analyze({ ...project, id: 'deepseek-project', llmModel: 'deepseek-v4.1-flash' }),
+    provider.analyze({ ...project, id: 'qwen-project', llmModel: 'qwen3.7-plus' }),
+  ]);
+  assert.deepEqual(requests.map(({ url, options }) => [url, options.body.model]).sort(), [
+    [codingUrl, 'qwen3.7-plus'],
+    [tokenUrl, 'deepseek-v4.1-flash'],
+  ].sort());
+});
+
 test('analysis chunks default to a 600-second request timeout',async()=>{
   const previous=process.env.AIFRAME_ANALYSIS_TIMEOUT_MS;
   delete process.env.AIFRAME_ANALYSIS_TIMEOUT_MS;

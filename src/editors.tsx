@@ -1,10 +1,10 @@
 import { useRef } from 'react';
-import { Camera, Check, CheckCheck, Clock3, Save, Sparkles, Video, X, Users } from 'lucide-react';
+import { Box, Camera, Check, CheckCheck, Clock3, Save, Sparkles, Video, X, Users } from 'lucide-react';
 import { EmptyImage, Notice, Spinner, StateMark, UploadButton } from './components';
-import { assetUrl, imageData, readableError } from './api';
+import { assetPreviewUrl, assetUrl, imageData, readableError } from './api';
 import { currentSegmentVideo, currentVideo, currentImage, currentProblemJobs, currentReference, identityReady, isActive, isArkVideoModel, isCurrentJob, isMiniMaxVideoModel, isXiongmaoVideoModel, lookFor, pad, roleNames, sceneWorkflow, shotReferencesReady, type Character, type CharacterDraft, type Project, type ProjectAction, type PublicConfig, type Shot, type ShotDraft } from './types';
 
-export const shotDraft = (shot: Shot): ShotDraft => ({ scene: shot.scene, sceneId: shot.sceneId || '', action: shot.action, camera: shot.camera, movementId: shot.movementId || '', movementPlan: shot.movementPlan || '', transitionPlan: shot.transitionPlan || '', dialogue: shot.dialogue, narration: shot.narration || '', sourceEvidence: shot.sourceEvidence || '', backgroundActors: shot.backgroundActors || '', characterIds: [...shot.characterIds], duration: shot.duration, trimStart: shot.trimStart });
+export const shotDraft = (shot: Shot): ShotDraft => ({ scene: shot.scene, sceneId: shot.sceneId || '', action: shot.action, camera: shot.camera, movementId: shot.movementId || '', movementPlan: shot.movementPlan || '', transitionPlan: shot.transitionPlan || '', dialogue: shot.dialogue, dialogueSpeakerId: shot.dialogueSpeakerId || '', narration: shot.narration || '', sourceEvidence: shot.sourceEvidence || '', backgroundActors: shot.backgroundActors || '', characterIds: [...shot.characterIds], assetIds: [...(shot.assetIds || [])], duration: shot.duration, trimStart: shot.trimStart });
 export const characterDraft = (character: Character): CharacterDraft => ({ name: character.name, role: character.role, aliases: [...character.aliases], appearance: character.appearance, evidence: character.evidence });
 function changedFields<T extends object>(before: T, after: T): Partial<T> {
   return Object.fromEntries(Object.entries(after).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key as keyof T]))) as Partial<T>;
@@ -15,8 +15,9 @@ interface SharedEditorProps {
   onError: (message: string) => void; showSettings: () => void;
 }
 
-export function CharacterEditor({ project, character, config, draft, change, clear, act, busy, onError, showSettings }: SharedEditorProps & {
+export function CharacterEditor({ project, character, config, draft, change, clear, act, busy, onError, showSettings, onPreview }: SharedEditorProps & {
   character: Character; draft: CharacterDraft; change: (patch: Partial<CharacterDraft>) => void; clear: () => void;
+  onPreview?: (src: string, alt: string) => void;
 }) {
   const dirty = JSON.stringify(draft) !== JSON.stringify(characterDraft(character));
   const generating = project.jobs.some(job => job.kind === 'character' && job.targetId === character.id && isActive(job) && isCurrentJob(project, job));
@@ -33,7 +34,7 @@ export function CharacterEditor({ project, character, config, draft, change, cle
     <div className="editor-heading"><div><span className="eyebrow">CHARACTER IDENTITY</span><h2>人物身份参考</h2></div><StateMark approved={character.approved && referenceCurrent} pending={!!character.reference} /></div>
     <div className="character-layout">
       <div className="character-visual">
-        <div className="character-reference">{character.reference ? <><img src={assetUrl(character.reference)} alt={`${character.name}的人物身份参考图`} />{!referenceCurrent && <span className="stale-overlay">旧版身份参考 · 需要更新</span>}</> : <EmptyImage label="给故事里的人，一个模样" detail="先生成或上传基础身份参考" />}{generating && <div className="media-working"><Spinner size={24} /><span>正在生成人物身份参考</span></div>}</div>
+        <div className="character-reference">{character.reference ? <><button type="button" className="image-preview-trigger" onClick={() => onPreview?.(assetUrl(character.reference), `${character.name}的人物身份参考图`)}><img src={assetPreviewUrl(character.reference)} alt={`${character.name}的人物身份参考图`} /></button>{!referenceCurrent && <span className="stale-overlay">旧版身份参考 · 需要更新</span>}</> : <EmptyImage label="给故事里的人，一个模样" detail="先生成或上传基础身份参考" />}{generating && <div className="media-working"><Spinner size={24} /><span>正在生成人物身份参考</span></div>}</div>
         <div className="character-action-bar">
           <div className="button-pair"><button className="button primary" disabled={blocked || dirty || !!uncertain || !config?.grsaiConfigured} title={dirty ? '请先保存角色设定' : uncertain ? '请先核实原任务' : !config?.grsaiConfigured ? '请先配置图片模型' : undefined} onClick={() => act(`${path}/generate`, { expectedVersion: character.version }, 'POST', '人物身份参考任务已加入队列。')}><Sparkles size={15} />{character.reference ? '重新生成' : '生成身份参考'}</button><UploadButton onFile={upload} disabled={blocked || dirty} /></div>
           {uncertain && <button className="text-button centered" disabled={blocked} onClick={() => act(`/jobs/${uncertain.id}/resume`, {}, 'POST', '正在核实原图片任务。')}>原身份任务待核实 · 查询状态</button>}
@@ -67,6 +68,7 @@ export function ShotEditor({ project, shot, config, draft, change, clear, act, b
   const segmentVideoJob = segment && project.jobs.find(job => job.kind === 'segment-video' && job.targetId === segment.id && isCurrentJob(project, job));
   const allApproved = segment?.shots.every(item => item.approved && currentImage(item) && (segmentBoardMode || shotReferencesReady(project, item))) ?? false;
   const missing = draft.characterIds.map(id => project.characters.find(character => character.id === id)).filter(character => !identityReady(project, character));
+  const selectedAssetIds = draft.assetIds ?? [];
   const referencesReady = segmentBoardMode || shotReferencesReady(project, draft);
   const imageCurrent = currentImage(shot);
   const blocked = busy || !!generating;
@@ -93,6 +95,7 @@ export function ShotEditor({ project, shot, config, draft, change, clear, act, b
       <label>运镜执行计划<textarea rows={3} value={draft.movementPlan || ''} onChange={event => change({ movementPlan: event.target.value })} placeholder="方向、速度、起止景别、焦点或特殊执行约束" /></label>
       <label>镜头衔接计划<textarea rows={2} value={draft.transitionPlan || ''} onChange={event => change({ transitionPlan: event.target.value })} placeholder="与前一镜的动作轴、视线、道具状态和切换方式" /></label>
       <label>角色台词<textarea rows={2} value={draft.dialogue} onChange={event => change({ dialogue: event.target.value })} placeholder="原文角色说的话；没有时留空" /></label>
+      <label>台词角色<select value={draft.dialogueSpeakerId || ''} onChange={event => change({ dialogueSpeakerId: event.target.value })}><option value="">未指定（仅当单一出场角色时自动绑定）</option>{project.characters.filter(character => draft.characterIds.includes(character.id)).map(character => <option key={character.id} value={character.id}>{character.name} · {roleNames[character.role]}</option>)}</select></label>
       <label>旁白<textarea rows={2} value={draft.narration} onChange={event => change({ narration: event.target.value })} placeholder="广告、纪录片、新闻或论文讲解旁白；没有时留空" /></label>
       <label>原文依据<textarea rows={2} value={draft.sourceEvidence} onChange={event => change({ sourceEvidence: event.target.value })} placeholder="这个镜头对应原文中的事实、段落或步骤；没有可靠依据时请标记待确认" /></label>
       <label>群众演员 / 环境人群<textarea rows={2} value={draft.backgroundActors || ''} onChange={event => change({ backgroundActors: event.target.value })} placeholder="例如：宗门弟子在广场两侧列队，商场顾客从背景经过；没有群众时留空" /></label>
@@ -104,8 +107,9 @@ export function ShotEditor({ project, shot, config, draft, change, clear, act, b
         const look = lookFor(project, draft.sceneId, character.id);
         const ready = segmentBoardMode || identityReady(project, character) && Boolean(look?.approved && currentReference(look));
         const reference = segmentBoardMode ? null : sceneWorkflow(project) ? look?.reference : character.reference;
-        return <label className={`cast-check ${draft.characterIds.includes(character.id) ? 'selected' : ''}`} key={character.id}><input type="checkbox" checked={draft.characterIds.includes(character.id)} onChange={event => change({ characterIds: event.target.checked ? [...draft.characterIds, character.id] : draft.characterIds.filter(id => id !== character.id) })} /><span className="cast-avatar">{reference ? <img src={assetUrl(reference)} alt="" /> : <Users size={16} />}</span><span className="cast-name">{character.name}<small>{segmentBoardMode ? `${roleNames[character.role]} · 文字设定` : sceneWorkflow(project) ? ready ? `${look!.name} · 已确认` : !look ? '本场景缺少造型' : look.reference && !currentReference(look) ? '三视图已过期' : '三视图待确认' : `${roleNames[character.role]} · 身份参考`}</small></span>{draft.characterIds.includes(character.id) && <Check size={14} />}</label>;
+        return <label className={`cast-check ${draft.characterIds.includes(character.id) ? 'selected' : ''}`} key={character.id}><input type="checkbox" checked={draft.characterIds.includes(character.id)} onChange={event => { const characterIds = event.target.checked ? [...draft.characterIds, character.id] : draft.characterIds.filter(id => id !== character.id); change({ characterIds, ...(draft.dialogueSpeakerId && !characterIds.includes(draft.dialogueSpeakerId) ? { dialogueSpeakerId: '' } : {}) }); }} /><span className="cast-avatar">{reference ? <img src={assetPreviewUrl(reference)} alt="" /> : <Users size={16} />}</span><span className="cast-name">{character.name}<small>{segmentBoardMode ? `${roleNames[character.role]} · 文字设定` : sceneWorkflow(project) ? ready ? `${look!.name} · 已确认` : !look ? '本场景缺少造型' : look.reference && !currentReference(look) ? '三视图已过期' : '三视图待确认' : `${roleNames[character.role]} · 身份参考`}</small></span>{draft.characterIds.includes(character.id) && <Check size={14} />}</label>;
       }) : <p className="helper">本项目没有已识别角色。</p>}</div>
+      {!!project.assets?.length && <><div className="field-label">本镜关键物品 <span className="label-hint">已确认的物品图会带入生图和视频参考</span></div><div className="asset-selector">{project.assets.map(asset => <label className={`cast-check ${selectedAssetIds.includes(asset.id) ? 'selected' : ''}`} key={asset.id}><input type="checkbox" checked={selectedAssetIds.includes(asset.id)} onChange={event => change({ assetIds: event.target.checked ? [...selectedAssetIds, asset.id] : selectedAssetIds.filter(id => id !== asset.id) })} /><span className="cast-avatar">{asset.reference ? <img src={assetPreviewUrl(asset.reference)} alt="" /> : <Box size={16} />}</span><span className="cast-name">{asset.name}<small>{asset.approved && currentReference(asset) ? '已确认参考图' : asset.reference ? '待审核' : '待生成'}</small></span>{selectedAssetIds.includes(asset.id) && <Check size={14} />}</label>)}</div></>}
       {!referencesReady && <p className="helper amber">{missing.length ? `先确认 ${missing.map(character => character?.name || '缺失角色').join('、')} 的人物身份，再完成场景造型。` : !draft.sceneId ? '请先选择此镜头所属的连续场景。' : '先确认所有出场人物在本场景的当前三视图，再生成或审核分镜。'}<button className="text-button" onClick={() => showLooks(draft.sceneId)}>完善本场景造型</button></p>}
       <div className="save-row"><span className={dirty ? 'unsaved' : 'muted'}>{dirty ? '修改尚未保存' : '设定已保存'}</span><button className="button small secondary" disabled={!dirty || blocked || !draft.scene.trim() || !draft.action.trim() || draft.duration <= 0 || (sceneWorkflow(project) && !project.scenes?.some(scene => scene.id === draft.sceneId))} onClick={save}><Save size={14} />保存</button></div>
     </div>

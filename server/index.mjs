@@ -1,14 +1,12 @@
 import path from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir} from 'node:fs/promises';
-import {existsSync} from 'node:fs';
-import ffmpeg from 'ffmpeg-static';
-import ffprobe from 'ffprobe-static';
 import {createHttpServer} from './http.mjs';
+import {ffmpegAvailable} from './media.mjs';
 import {acquireDataLock} from './lock.mjs';
 import {createWorkspaces} from './workspaces.mjs';
-import {createTdlAuth} from './tdl-auth.mjs';
-import {createFileAuthStore} from './auth-store.mjs';
+import {createTdlAuthFactory} from './tdl-auth.mjs';
+import {createFileAuthSessionStore} from './auth-store.mjs';
 import {createAdminAuth} from './admin-auth.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
@@ -17,10 +15,10 @@ export async function startApp({dataDir=process.env.AI_FRAME_DATA_DIR||path.join
   const release=await acquireDataLock(dataDir);
   let workspaces;
   try {
-  const fileAuth = !loadAuth && !saveAuth && process.env.AI_FRAME_AUTH_FILE ? createFileAuthStore(process.env.AI_FRAME_AUTH_FILE) : null;
-  const auth=await createTdlAuth({load:loadAuth || fileAuth?.load,save:saveAuth || fileAuth?.save,persistLogin:Boolean(fileAuth && process.env.AI_FRAME_PERSIST_AUTH === '1')});
-  workspaces=await createWorkspaces({dataDir,outputRoot,loadCredentials,saveCredentials,configEnv,ffmpegAvailable:Boolean(ffmpeg&&existsSync(ffmpeg)&&existsSync(ffprobe.path))});
-  const httpServer=await createHttpServer({auth,workspaces,distDir:path.join(root,'dist'),downloadsDir,adminAuth:createAdminAuth() ,port,allowDevOrigin});
+  const fileAuth = !loadAuth && !saveAuth && process.env.AI_FRAME_AUTH_FILE ? createFileAuthSessionStore(process.env.AI_FRAME_AUTH_FILE) : null;
+  const authFactory=createTdlAuthFactory({load:loadAuth || fileAuth?.load,save:saveAuth || fileAuth?.save,persistLogin:Boolean((fileAuth || (loadAuth && saveAuth)) && process.env.AI_FRAME_PERSIST_AUTH === '1')});
+  workspaces=await createWorkspaces({dataDir,outputRoot,loadCredentials,saveCredentials,configEnv,ffmpegAvailable:await ffmpegAvailable()});
+  const httpServer=await createHttpServer({authFactory,workspaces,distDir:path.join(root,'dist'),downloadsDir,adminAuth:createAdminAuth() ,port,allowDevOrigin});
   return {...httpServer,close:async()=>{try{await httpServer.close();await workspaces.close();}finally{await release();}}};
   }catch(error){if(workspaces)await workspaces.close();await release();throw error;}
 }
