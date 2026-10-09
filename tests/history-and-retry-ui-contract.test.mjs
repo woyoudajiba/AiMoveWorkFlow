@@ -27,6 +27,15 @@ test('video and export surfaces keep explicit regeneration actions after a compl
   assert.match(source, /reuseExisting:\s*false/);
 });
 
+test('project export history keeps the current segment export retry visible', async () => {
+  const source = await readFile(path.resolve('src/App.tsx'), 'utf8');
+  const exportView = source.slice(source.indexOf('function ExportsView'), source.indexOf('function HistoryView'));
+  assert.doesNotMatch(exportView, /if \(projectRecords\.length\) return/);
+  assert.match(exportView, /onProjectExport/);
+  assert.match(exportView, /重新合成项目成片/);
+  assert.match(exportView, /重新导出片段成片/);
+});
+
 test('continuity asset catalogs keep independent desktop scroll regions and natural mobile flow', async () => {
   const styles = await readFile(path.resolve('src/styles.css'), 'utf8');
   assert.match(styles, /\.assets-list,\.scene-list\{[^}]*max-height:calc\(100vh - 190px\)[^}]*overflow-y:auto/);
